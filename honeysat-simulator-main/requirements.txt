@@ -1,0 +1,10 @@
+dotenv
+pybamm
+skyfield
+numpy
+scipy
+pyzmq
+pyIGRF
+pymongo
+pillow
+matplotlib
