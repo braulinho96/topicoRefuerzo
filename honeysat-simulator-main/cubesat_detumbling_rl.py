@@ -77,6 +77,9 @@ class CubeSatDetumblingEnv(gym.Env):
         # ajustable dependiendo de la misión y el contexto
         self.success_threshold = 0.01  # rad/s
 
+        # Registro de la velocidad anterior para bonus de recompenza
+        self.prev_angular_vel_norm = None
+
     def _create_simulators(self):
         """Crear instancias de simuladores.
         - RotationSimulation
@@ -157,6 +160,7 @@ class CubeSatDetumblingEnv(gym.Env):
         # reiniciar tracking
         self.current_step = 0
         self.episode_reward = 0.0
+        self.prev_angular_vel_norm = None
 
         # esperar a que se reinicie todo, not the best solution pero funciona
         time.sleep(0.1)
@@ -333,9 +337,18 @@ class CubeSatDetumblingEnv(gym.Env):
         # puede ser cambiada, requiere experimentación
         reward = -angular_vel_norm - 0.01 * control_effort
 
+        # aplicar bonus si es que hubo una reducción significativa en la velocidad angular
+        if self.prev_angular_vel_norm is not None:
+            reduction = self.prev_angular_vel_norm - angular_vel_norm
+            if reduction > 0.05 * self.prev_angular_vel_norm:
+                reward += 0.5  
+
         # acá se aplica bonus si es que se logra una velocidad angular muy baja
         if angular_vel_norm < self.success_threshold:
             reward += 10.0
+
+        #Actualizar velocidad anterior
+        self.prev_angular_vel_norm = angular_vel_norm
 
         return reward
 
