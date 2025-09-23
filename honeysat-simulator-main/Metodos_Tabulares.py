@@ -57,22 +57,24 @@ def run_random_agent(episodes=10, max_steps=100):
     env.close()
     return q_table, ang_vel_bins, total_rewards
 
-def train_q_learning(episodes=10, max_steps=500, alpha=0.1, gamma=0.7, epsilon=1.0, epsilon_decay=0.995, min_epsilon=0.01):
+def softmax(x, tau=1.0):
+    x = np.array(x)
+    x = x - np.max(x)  # para estabilidad numérica
+    exp_x = np.exp(x / tau)
+    return exp_x / np.sum(exp_x)
+
+def train_q_learning(episodes=20000, max_steps=500, learning_rate=0.2, discount_factor=0.99, epsilon=1.0, epsilon_decay=0.999, min_epsilon=0.01):
     """Entrena un agente de Q-learning en el entorno de detumbling del CubeSat."""
-    print("=" * 50)
     print("🚀 INICIANDO ENTRENAMIENTO DE Q-LEARNING")
     print(f"📈 Episodios totales: {episodes:,}")
     print("=" * 50)
 
     env = CubeSatDetumblingEnv(max_steps=max_steps)
-
+    numero_bins =20
     # Bins de discretización para la velocidad angular (3 dimensiones)
-    ang_vel_bins = [
-        np.linspace(-1.5, 1.5, 10),
-        np.linspace(-1.5, 1.5, 10),
-        np.linspace(-1.5, 1.5, 10)
-    ]
-    numero_bins = 10
+    bins = np.linspace(-1.5, 1.5, numero_bins)
+    ang_vel_bins = [bins, bins, bins]
+    
     num_states = numero_bins**3
     num_actions = env.action_space.n
     q_table = np.zeros((num_states, num_actions))
@@ -91,20 +93,39 @@ def train_q_learning(episodes=10, max_steps=500, alpha=0.1, gamma=0.7, epsilon=1
                 action = env.action_space.sample() 
             else:
                 action = np.argmax(q_table[state, :])
+            
+            # Utilizando softmax para selección de acción
+            #probs = softmax(q_table[state, :], tau=1.0)
+            #action = np.random.choice(np.arange(num_actions), p=probs)
+            
+            # Imprimir velocidad angular antes de aplicar la acción
+            #print(f"Step: {step_count}")
+            #print("Velocidad angular normal antes: {:.4f} rad/s".format(np.linalg.norm(obs[4:7])))
 
             next_obs, reward, terminated, truncated, _ = env.step(action)
+            
+            # Imprimir velocidad angular después de aplicar la acción
+            #print("Velocidad angular normal despues: {:.4f} rad/s".format(np.linalg.norm(next_obs[4:7])))
+            #print("-" * 50)
+            
             next_state = discretize_state(next_obs, ang_vel_bins)
             done = terminated or truncated
             total_reward += reward
-            q_table[state, action] = q_table[state, action] + alpha * (reward + gamma * np.max(q_table[next_state, :]) - q_table[state, action])
+            q_table[state, action] = q_table[state, action] + learning_rate * (reward + discount_factor * np.max(q_table[next_state, :]) - q_table[state, action])
             state = next_state
+            obs = next_obs
             step_count += 1
             
         epsilon = max(min_epsilon, epsilon * epsilon_decay)
         total_rewards.append(total_reward)
-        print(f"Episodio {episode+1}/{episodes}: Recompensa total = {total_reward:.2f}, Pasos = {step_count}")
+        print(f"Episodio {episode+1}/{episodes}: Recompensa total = {total_reward:.2f}, Pasos = {step_count}, Velocidad angular normal = {np.linalg.norm(obs[4:7]):.2f}")
 
     env.close()
+    
+    # Save the Q-table
+    with open("q_table.pkl", "wb") as f:
+        pickle.dump(q_table, f)
+    
     return q_table, ang_vel_bins, total_rewards
 
 def train_monte_carlo(episodes=10, max_steps=500, gamma=0.7, epsilon=1.0, epsilon_decay=0.995, min_epsilon=0.01):
@@ -220,15 +241,15 @@ if __name__ == "__main__":
     print()
     
     # 1. Evaluación del agente aleatorio (línea de base)
-    q_table_random, ang_vel_bins_random, rewards_random = run_random_agent(episodes=3, max_steps=100)
-    evaluate_agent(q_table_random, ang_vel_bins_random, episodes=10, max_steps=100, agent_name="Aleatorio")
+    #q_table_random, ang_vel_bins_random, rewards_random = run_random_agent(episodes=3, max_steps=100)
+    #evaluate_agent(q_table_random, ang_vel_bins_random, episodes=10, max_steps=100, agent_name="Aleatorio")
 
     # 2. Entrenamiento y evaluación del agente de Q-learning
-    q_table_ql, ang_vel_bins_ql, rewards_ql = train_q_learning(episodes=10, max_steps=100)
-    evaluate_agent(q_table_ql, ang_vel_bins_ql, episodes=10, max_steps=100, agent_name="Q-Learning")
+    q_table_ql, ang_vel_bins_ql, rewards_ql = train_q_learning(episodes=20000, max_steps=250)
+    evaluate_agent(q_table_ql, ang_vel_bins_ql, episodes=20, max_steps=100, agent_name="Q-Learning")
 
     # 3. Entrenamiento y evaluación del agente de Monte Carlo
-    q_table_mc, ang_vel_bins_mc, rewards_mc = train_monte_carlo(episodes=10, max_steps=100)
-    evaluate_agent(q_table_mc, ang_vel_bins_mc, episodes=10, max_steps=100, agent_name="Monte Carlo")
+    #q_table_mc, ang_vel_bins_mc, rewards_mc = train_monte_carlo(episodes=10, max_steps=100)
+    #evaluate_agent(q_table_mc, ang_vel_bins_mc, episodes=10, max_steps=100, agent_name="Monte Carlo")
 
     print("\n🎉 ¡Demo completada!")

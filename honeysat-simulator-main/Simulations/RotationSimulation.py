@@ -184,8 +184,8 @@ class RotationSimulation(Simulation):
 
     def d_omega(self, x_omega_b: np.array) -> np.array:
         h_total_b = self.moment_of_inertia.dot(x_omega_b)
-        w_dot = - self.inv_moment_of_inertia @ (self.torque - np.cross(x_omega_b, h_total_b))
-        return w_dot
+        w_dot = self.inv_moment_of_inertia @ (self.torque - np.cross(x_omega_b, h_total_b))
+        return w_dot  
 
     @staticmethod
     def omega4kinematics(x_omega_b: np.array):
