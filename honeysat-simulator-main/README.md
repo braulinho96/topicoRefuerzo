@@ -15,7 +15,7 @@ pip install -r requirements.txt
 ```
 
 Download the igrf14coeffs.txt file from:  https://www.ngdc.noaa.gov/IAGA/vmod/coeffs/igrf14coeffs.txt
-and place it in `env/lib/python3.13/site-packages/pyIGRF/src/igrf14coeffs.txt`
+and place it in `env/lib/<PYTHON-VERSION>/site-packages/pyIGRF/src/igrf14coeffs.txt`
 
 ```shell
 mkdir -p <PYTHON_PATH>/site-packages/pyIGRF/src/

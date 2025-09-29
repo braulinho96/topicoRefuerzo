@@ -9,7 +9,7 @@ from Simulations.Simulation import Simulation
 from Simulations.RotationSimulation import RotationSimulation
 
 from SatellitePersonality import SatellitePersonality
-from skyfield.api import Loader, wgs84, Topos
+from skyfield.api import Loader, wgs84, Topos, utc
 
 # Create skyfield loader with custom path
 load = Loader('./TLE_and_data')
@@ -58,6 +58,15 @@ class OrbitalSimulation(Simulation):
         self.__sunlit = False
         self.__satellite_subpoint_location = None
 
+    def get_latitude(self):
+        return self.__latitude
+
+    def get_longitude(self):
+        return self.__longitude
+
+    def get_alt_from_surface_km(self):
+        return self.__alt_from_surface_km
+    
     def _run_simulation(self):
         self.__update_full_simulation_data()
         try:
@@ -140,6 +149,14 @@ class OrbitalSimulation(Simulation):
             else:
                 print(f"Exception in simulation: {e}")
 
+    def update_simulation(self, current_time: datetime):
+        """
+        Update all the simulation data if it is too old.
+        """
+        self.__update_orientation_data(current_time)
+        self.__update_orbital_data(current_time)
+        self.__update_tle_if_needed()
+
     def __update_tle_if_needed(self):
         """ Update the TLE file if it is too old. """
         if self.__is_tle_too_old():
@@ -183,13 +200,14 @@ class OrbitalSimulation(Simulation):
         """
         Update all the simulation data if it is too old.
         """
+        current_time = datetime.now()
         if self.__is_orientation_data_too_old():
-            self.__update_orientation_data()
-            self.last_orientation_update = datetime.now()
+            self.__update_orientation_data(current_time)
+            self.last_orientation_update = current_time
 
         if self.__is_orbital_data_too_old():
-            self.__update_orbital_data()
-            self.last_orbital_update = datetime.now()
+            self.__update_orbital_data(current_time)
+            self.last_orbital_update = current_time
 
         self.__update_tle_if_needed()
 
@@ -205,22 +223,26 @@ class OrbitalSimulation(Simulation):
         else:
             return True
 
-    def __update_orientation_data(self):
+    def __update_orientation_data(self, current_time: datetime):
         """
         Update the orientation data of the satellite.
         It makes calculations based on the current satellite position and the position of the sun and earth.
         It uses the rotation simulation to get the orientation of the satellite.
         """
 
+        # Fix timezone if necessary
+        if current_time.tzinfo is None:
+            current_time = current_time.replace(tzinfo=utc)
+
         ts = load.timescale()
-        now = ts.now()
+        now = ts.from_datetime(current_time)
 
         eph = self.eph
         earth = eph['earth']
         sun = eph['sun']
 
         # get the Rotation from the rotation simulation
-        satellite_orientation = np.array(self.rotation_simulation.send_request('quaternion').result())
+        satellite_orientation = self.rotation_simulation.quaternion.copy()
         satellite_orientation[:3] *= -1  # conjugate
         rotation_satellite = R.from_quat(satellite_orientation)
 
@@ -262,13 +284,17 @@ class OrbitalSimulation(Simulation):
         else:
             return True
 
-    def __update_orbital_data(self):
+    def __update_orbital_data(self, current_time: datetime):
         """
         It updates the orbital data of the satellite.
         It makes calculations based on the current satellite position and the position of the observer.
         """
+        # Fix timezone if necessary
+        if current_time.tzinfo is None:
+            current_time = current_time.replace(tzinfo=utc)
+
         ts = load.timescale()
-        now = ts.now()
+        now = ts.from_datetime(current_time)
 
         # Compute the position of the satellite at the current time
         geocentric = self.satellite.at(now)

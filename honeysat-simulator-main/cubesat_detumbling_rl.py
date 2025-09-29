@@ -3,7 +3,12 @@ import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
 import time
+import matplotlib
+from zmq.backend import second
 
+matplotlib.use('TkAgg')
+import matplotlib.pyplot as plt
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -13,6 +18,7 @@ from Simulations.RotationSimulation import RotationSimulation
 from Simulations.OrbitalSimulation import OrbitalSimulation
 from Simulations.MagneticSimulation import MagneticSimulation
 from SatellitePersonality import SatellitePersonality
+from skyfield.api import utc
 
 
 class CubeSatDetumblingEnv(gym.Env):
@@ -26,20 +32,28 @@ class CubeSatDetumblingEnv(gym.Env):
 
     metadata = {'render_modes': ['human', 'none']}
 
-    def __init__(self, render_mode=None, max_steps=500, time_step=0.1):
+    def __init__(self, render_mode=None, max_steps=500, start_time=datetime.now(), time_step=0.1, granularity=100, debug=False, plot_hist=False):
         """
         Inicializar el entorno de CubeSat para el problema de detumbling.
 
         Args:
             render_mode (str): Modo de renderizado ('human' o None)
             max_steps (int): Pasos máximos por episodio
+            start_time (datetime): Tiempo inicial de la simulacion
             time_step (float): Paso de tiempo de simulación en segundos
+            granularity (int): Granularida de la simulacion, divide a time_step
+            debug (bool): Activar historico de observaciones y graficar
         """
         super().__init__()
 
         self.render_mode = render_mode
         self.max_steps = max_steps
         self.time_step = time_step
+        self.start_time = start_time
+        self.current_time = self.start_time
+
+        self.sim_granularity = granularity
+        self._plot_hist = plot_hist
 
         # inicializar componentes del simulador
         self.rotation_sim = None
@@ -77,8 +91,18 @@ class CubeSatDetumblingEnv(gym.Env):
         # ajustable dependiendo de la misión y el contexto
         self.success_threshold = 0.01  # rad/s
 
-        # Registro de la velocidad anterior para bonus de recompenza
-        self.prev_angular_vel_norm = None
+        # Para efectos de debug, guardar un historial de observaciones y graficarlas
+        self._debug = debug  # Debug activado
+        self._observation_hist = []  # Historico de observaciones
+        self._time_hist = []  # Historic time
+        if self._debug:
+            # import matplotlib.pyplot as plt
+            pass
+            # self.__figure, axes = plt.subplots(2, 1)
+            # axes[0].grid(True)
+            # axes[1].grid(True)
+            # plt.ion()
+            # plt.show(block=False)
 
     def _create_simulators(self):
         """Crear instancias de simuladores.
@@ -86,47 +110,27 @@ class CubeSatDetumblingEnv(gym.Env):
         - OrbitalSimulation
         - MagneticSimulation
         """
-        if self.rotation_sim is not None:
-            try:
-                self.rotation_sim.stop()
-            except Exception:
-                pass
-        if self.orbital_sim is not None:
-            try:
-                self.orbital_sim.stop()
-            except Exception:
-                pass
-        if self.magnetic_sim is not None:
-            try:
-                self.magnetic_sim.stop()
-            except Exception:
-                pass
-
         # llamar constructores de simuladores, ver parametros si se necesita debuguear
-        self.rotation_sim = RotationSimulation(debug=False)
+        self.rotation_sim = RotationSimulation(debug=False, start_time=self.start_time)
         self.orbital_sim = OrbitalSimulation(self.rotation_sim)
         self.magnetic_sim = MagneticSimulation(self.orbital_sim, self.rotation_sim)
 
+
     def _start_simulators(self):
         """Inicializar hilos de cada simulador. Implementación paralelizada."""
-        try:
-            self.rotation_sim.start()
-            self.orbital_sim.start()
-            self.magnetic_sim.start()
-        except Exception as e:
-            print(f"Warning: Could not start all simulators: {e}")
+        # This is no longer needed for the synchronous RL environment
+        pass
 
     def _stop_simulators(self):
         """Detener los hilos de cada simulador."""
-        try:
-            if self.rotation_sim:
-                self.rotation_sim.stop()
-            if self.orbital_sim:
-                self.orbital_sim.stop()
-            if self.magnetic_sim:
-                self.magnetic_sim.stop()
-        except Exception as e:
-            print(f"Warning: Error stopping simulators: {e}")
+        # This is no longer needed for the synchronous RL environment
+        pass
+
+    def _update_simulators(self, current_time: datetime):
+        """ Actualizar los simuladores segun el tiempo simulado """
+        self.rotation_sim.update_simulation(current_time)
+        self.orbital_sim.update_simulation(current_time)
+        self.magnetic_sim.update_simulation(current_time)
 
     def reset(self, seed=None, options=None):
         """
@@ -141,29 +145,30 @@ class CubeSatDetumblingEnv(gym.Env):
         super().reset(seed=seed)
 
         # parar simulaciones para luego reiniciarlas para nuevo episodio
-        self._stop_simulators()
         self._create_simulators()
 
-        # condiciones iniciales aleatorias, realmente puede cambiarse en caso de utilizar otro simulador
+        # condiciones iniciales aleatorias o fijas
         initial_angular_velocity = self.np_random.uniform(-1.0, 1.0, size=3)
+        # initial_angular_velocity = np.array([1.0, 0.0, 0.0])
 
-        # generar quaternion inicial aleatorio
-        random_quat = self.np_random.normal(size=4)
-        random_quat /= np.linalg.norm(random_quat)
+        initial_quat = self.np_random.normal(size=4)
+        # initial_quat = np.array([1.0, 0.0, 0.0, 0.0])
 
+        # Setear condiciones iniciales
+        initial_quat /= np.linalg.norm(initial_quat)
         self.rotation_sim.angular_velocity = initial_angular_velocity
-        self.rotation_sim.quaternion = random_quat
+        self.rotation_sim.quaternion = initial_quat
 
         # empezar simulaciones con nuevas condiciones
-        self._start_simulators()
+        # self._start_simulators()
 
         # reiniciar tracking
         self.current_step = 0
         self.episode_reward = 0.0
-        self.prev_angular_vel_norm = None
+        self.current_time = self.start_time
 
-        # esperar a que se reinicie todo, not the best solution pero funciona
-        time.sleep(0.1)
+        self.orbital_sim.update_simulation(self.current_time)
+        self.magnetic_sim.update_simulation(self.current_time)
 
         observation = self._get_observation()
         info = {}
@@ -187,28 +192,30 @@ class CubeSatDetumblingEnv(gym.Env):
         # mapear accion discreta a vector de torque
         torque_action = self.action_map[action]
 
-        try:
-            # aplicar accion de torque al simulador de rotacion
-            self.rotation_sim.set_torque(torque_action)
-            time.sleep(self.time_step)
+        ### TEST: Compare with a simple proportional controller
+        # G = 1e-3
+        # torque_action = -self.rotation_sim.angular_velocity*G
+        ###
 
-        except ValueError as e:
-            # en caso de que se exceda el limite de torque
-            print(f"Warning: {e}")
-            # recortar accion al limite permitido
-            max_torque = SatellitePersonality.MAX_TORQUE_REACTION_WHEEL
-            clipped_action = np.clip(torque_action, -max_torque, max_torque)
-            try:
-                self.rotation_sim.set_torque(clipped_action)
-                time.sleep(self.time_step)
-            except Exception as e2:
-                print(f"Error even with clipped action: {e2}")
+        # aplicar accion de torque al simulador de rotacion
+        self.rotation_sim.set_torque(torque_action)
 
-        except Exception as e:
-            print(f"Unexpected error in step: {e}")
+        # Avanzar la simulacion con una granularidad menor
+        dt = self.time_step / self.sim_granularity
+        for i in range(self.sim_granularity):
+            self.current_time += timedelta(seconds=dt) # Avanzar el tiempo en el step definido
+            self._update_simulators(self.current_time) # Actualizar las simulaciones
 
-        # obtener nueva observacion
-        observation = self._get_observation()
+
+            # obtener nueva observacion
+            observation = self._get_observation()
+            # Guardar historicos para graficar
+            if self._debug:
+                # Agregar el torque también al historico
+                observation = np.concatenate((observation, torque_action))
+                self._observation_hist.append(observation)
+                # Agregar el tiempo al historico
+                self._time_hist.append(self.current_time.timestamp())
 
         # calcular recompensa
         reward = self._calculate_reward(torque_action)
@@ -253,12 +260,13 @@ class CubeSatDetumblingEnv(gym.Env):
 
             # obtener info del campo magnetico
             try:
-                mag_field_data = self.magnetic_sim.send_request('earth_magnetic_field').result()
+                # Call the method directly instead of sending a request
+                mag_field_data = self.magnetic_sim.magnetic_field
                 # extraer componentes x, y, z y convertir de nT a T
                 mag_field_inertial = np.array([
-                    mag_field_data['north'],
-                    mag_field_data['east'],
-                    mag_field_data['vertical']
+                    mag_field_data[0], # north
+                    mag_field_data[1], # east
+                    mag_field_data[2]  # vertical
                 ]) * 1e-9
 
                 # rotar campo magnetico de inercial a cuerpo usando quaternion
@@ -313,7 +321,6 @@ class CubeSatDetumblingEnv(gym.Env):
             return vector
 
     def _calculate_reward(self, action):
-        
         """
         Calcular la recompensa para el paso actual.
 
@@ -329,29 +336,17 @@ class CubeSatDetumblingEnv(gym.Env):
         except Exception:
             # si no se puede obtener, se retorna 1
             angular_vel_norm = 1.0
-        
-        # obtener "effort" de control
+
+            # obtener "effort" de control
         control_effort = np.linalg.norm(action)
-        
+
         # funcion de recompensa: penalizar alta velocidad angular y esfuerzo de control
-        reward = -angular_vel_norm - 0.01 * control_effort 
-        
-        # aplicar bonus si es que hubo una reducción significativa en la velocidad angular
-        if self.prev_angular_vel_norm is not None:
-            reduction = self.prev_angular_vel_norm - angular_vel_norm
-            if reduction > 0.05 * self.prev_angular_vel_norm:  # >5% reducción
-                reward += 1.0
-            elif reduction > 0.1 * self.prev_angular_vel_norm:  # >10% reducción
-                reward += 2.0
-            elif reduction > 0.2 * self.prev_angular_vel_norm:  # >20% reducción
-                reward += 3.0
+        # puede ser cambiada, requiere experimentación
+        reward = -angular_vel_norm - 0.01 * control_effort
 
+        # acá se aplica bonus si es que se logra una velocidad angular muy baja
         if angular_vel_norm < self.success_threshold:
-            print("🎉 SUCCESS: Detumbling achieved!")
-            reward += 10  
-
-        #Actualizar velocidad anterior
-        self.prev_angular_vel_norm = angular_vel_norm
+            reward += 10.0
 
         return reward
 
@@ -366,18 +361,65 @@ class CubeSatDetumblingEnv(gym.Env):
                 angular_vel_norm = np.linalg.norm(angular_velocity)
 
                 print(f"Step: {self.current_step:3d} | "
+                      f"Time: {self.current_time.timestamp():.4f} | "
                       f"ω_norm: {angular_vel_norm:.4f} rad/s | "
+                      f"ω: [{angular_velocity[0]:.3f}, {angular_velocity[1]:.3f}, {angular_velocity[2]:.3f}] rad/s | "
                       f"Episode Reward: {self.episode_reward:.2f} | "
-                      f"Quaternion: [{quaternion[0]:.3f}, {quaternion[1]:.3f}, "
-                      f"{quaternion[2]:.3f}, {quaternion[3]:.3f}]")
+                      f"Quaternion: [{quaternion[0]:.3f}, {quaternion[1]:.3f}, {quaternion[2]:.3f}, {quaternion[3]:.3f}]")
             except Exception as e:
                 print(f"Render error: {e}")
+
+        if self.render_mode == 'plot':
+            pass
 
     def close(self):
         """
         Limpiar entorno y reiniciar todos los simuladores externos.
         """
+        if self._plot_hist:
+            self.show_hist()
         self._stop_simulators()
+
+    def show_hist(self):
+        if len(self._observation_hist) == 0:
+            print("No hay historial guardado")
+            return
+
+        observation_hist = np.array(self._observation_hist)
+        quat_hist = observation_hist[:,0:4]
+        vel_hist = observation_hist[:,4:7]
+        mag_hist = observation_hist[:,7:10]
+        torque_hist = observation_hist[:,10:13]
+
+        figure, axes = plt.subplots(3, 1)
+        plt.title("Rotation Simulation")
+        axes[0].grid(True)
+        axes[1].grid(True)
+        plt.ion()
+        plt.show(block=False)
+
+        axes[0].clear()
+        axes[0].plot(self._time_hist, np.array(vel_hist), "--.", label=["x", "y", "z"])
+        axes[0].legend(loc="upper right")
+        axes[0].set_ylabel('Velocity (rad/s)')
+        axes[0].set_xlabel('Time')
+        axes[0].grid(True)
+
+        axes[1].clear()
+        axes[1].plot(self._time_hist, np.array(quat_hist), "--.", label=["i", "j", "k", "s"])
+        axes[1].legend(loc="upper right")
+        axes[1].set_ylabel('Quaternion')
+        axes[1].set_xlabel('Time')
+        axes[1].grid(True)
+
+        axes[2].clear()
+        axes[2].plot(self._time_hist, np.array(torque_hist), "--.", label=["Tx", "Ty", "Tz"])
+        axes[2].legend(loc="upper right")
+        axes[2].set_ylabel('Torque (%)')
+        axes[2].set_xlabel('Time')
+        axes[2].grid(True)
+
+        plt.show(block=True)
 
 
 def test_environment_basic():
@@ -430,29 +472,39 @@ if __name__ == "__main__":
     print("CubeSat Detumbling Environment Test")
     print("=" * 60)
 
+    debug = True  # Activar o desactivar gráficos
+    plot_hist = True
+    start_time = datetime.fromtimestamp(1758566834)
+    time_step = 1
+    total_time = 15*60
+    granularity = 10
+
     # crear y probar el entorno
-    env = CubeSatDetumblingEnv(render_mode='human')
+    env = CubeSatDetumblingEnv(render_mode='human', start_time=start_time, time_step=time_step, granularity=granularity,
+                               debug=debug, plot_hist=plot_hist)
 
     print("Environment created successfully!")
     print(f"Action space: {env.action_space}")
     print(f"Observation space: {env.observation_space}")
 
     try:
-        # correr un episodio de prueba...
-        obs, _ = env.reset()
-        print(f"\nInitial observation shape: {obs.shape}")
-        print("Running 20 random steps...")
+        episodes = 2
+        for i in range(episodes):
+            # correr un episodio
+            obs, _ = env.reset()
+            print(f"\nInitial observation shape: {obs.shape}")
+            print("Running N random steps...")
 
-        for step in range(20):
-            action = env.action_space.sample()
-            obs, reward, terminated, truncated, info = env.step(action)
+            for step in np.arange(0, total_time, time_step):
+                action = env.action_space.sample()
+                obs, reward, terminated, truncated, info = env.step(action)
 
-            if terminated:
-                print(f"\nSUCCESS! Episode completed at step {step + 1}")
-                break
-            elif truncated:
-                print(f"\nEpisode truncated at step {step + 1}")
-                break
+                if terminated:
+                    print(f"\nSUCCESS! Episode completed at step {step + 1}")
+                    break
+                elif truncated:
+                    print(f"\nEpisode truncated at step {step + 1}")
+                    break
 
     except Exception as e:
         print(f"Test error: {e}")

@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 
 class RotationSimulation(Simulation):
 
-    def __init__(self, debug=False):
+    def __init__(self, debug=False, start_time=datetime.now()):
         super().__init__()
         self.moment_of_inertia = np.diag(np.array(SatellitePersonality.MOMENT_OF_INERTIA))
         self.inv_moment_of_inertia = np.linalg.inv(self.moment_of_inertia)
@@ -20,7 +20,8 @@ class RotationSimulation(Simulation):
         self.angular_velocity = np.array([0.0, 5.0, -0.0]) * np.deg2rad(1)  # relative angular velocity of the spacecraft respect to inertial frame represented in body frame
         self.control_acceleration = np.array([0.0, 0.0, 0.0])
         self.torque = np.array([0.0, 0.0, 0.0])
-        self.last_run_time = datetime.now()
+        self.last_run_time = start_time
+        self.debug = debug
         self._information_lock = Lock()
 
         # Setup debug plot
@@ -78,21 +79,30 @@ class RotationSimulation(Simulation):
             else:
                 print(f"Exception in OrbitalSimulation: {e}")
 
-    def update_simulation(self):
-        current_time = datetime.now()
+    def update_simulation(self, current_time: datetime = None):
+        if current_time is None:
+            current_time = datetime.now()
+
         time_difference = current_time - self.last_run_time
         time_difference_seconds = time_difference.total_seconds()
+        self.last_run_time = current_time
 
         if np.any(self.torque != 0):
+            # TODO: inv_moment_of_inertia must be RW inertia
             self.control_acceleration = self.inv_moment_of_inertia @ self.torque
         else:
             self.control_acceleration = np.array([0.0, 0.0, 0.0])
 
+        # self.current_rw_velocity = # TODO init to 0
         # rk4 integration for time diff lower than 1 sec
         current_ang_velocity = self.angular_velocity.copy()
-        self.angular_velocity += self.runge_kutta_4(self.d_omega, current_ang_velocity, time_difference_seconds)
-        self.quaternion += self.runge_kutta_4(self.d_quaternion, self.quaternion, time_difference_seconds,
-                                              current_ang_velocity)
+        current_quat = self.quaternion.copy()
+
+        # Update angular velocity first
+        self.angular_velocity += self.runge_kutta_4(self.d_omega, time_difference_seconds, current_ang_velocity)
+
+        # Then update the quaternion using the original angular velocity for the step
+        self.quaternion += self.runge_kutta_4(self.d_quaternion, time_difference_seconds, current_quat, current_ang_velocity)
 
         # normalization
         self.quaternion /= np.linalg.norm(self.quaternion)
@@ -104,8 +114,6 @@ class RotationSimulation(Simulation):
         if self.__debug:
             print(self.quaternion, self.angular_velocity, time_difference_seconds)
             #self.__debug_plot(current_time, self.quaternion.tolist(), self.angular_velocity.tolist())
-
-        self.last_run_time = current_time
 
     def __debug_plot(self, current_time, current_quaternion, current_velocity):
         """
@@ -141,7 +149,7 @@ class RotationSimulation(Simulation):
         """
         if isinstance(torque, np.ndarray) and torque.shape == (3,):
             with self._information_lock:
-                self.update_simulation()
+                # self.update_simulation()
 
                 if np.any(np.abs(torque) > self.max_torque_reaction_wheel):
                     raise ValueError('Torque exceeds the maximum torque of the reaction wheel')
@@ -183,9 +191,10 @@ class RotationSimulation(Simulation):
         return q_dot
 
     def d_omega(self, x_omega_b: np.array) -> np.array:
+        # TODO: Torque was included directly into dynamic calculations, replace with a RW model.
         h_total_b = self.moment_of_inertia.dot(x_omega_b)
-        w_dot = self.inv_moment_of_inertia @ (self.torque - np.cross(x_omega_b, h_total_b))
-        return w_dot  
+        w_dot = - self.inv_moment_of_inertia @ (np.cross(x_omega_b, h_total_b) - self.torque)
+        return w_dot
 
     @staticmethod
     def omega4kinematics(x_omega_b: np.array):
@@ -221,18 +230,11 @@ class RotationSimulation(Simulation):
                    left_quat[3] * right_quat[3])
         return temp
 
-    @staticmethod
-    def runge_kutta_4(function, x, dt, *args):
+    def runge_kutta_4(self, function, dt, x, *args):
         k1 = function(x, *args)
-        xk2 = x + (dt / 2.0) * k1
-
-        k2 = function(xk2, *args)
-        xk3 = x + (dt / 2.0) * k2
-
-        k3 = function(xk3, *args)
-        xk4 = x + dt * k3
-
-        k4 = function(xk4, *args)
+        k2 = function(x + dt / 2.0 * k1, *args)
+        k3 = function(x + dt / 2.0 * k2, *args)
+        k4 = function(x + dt * k3, *args)
 
         next_x = (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
         return next_x

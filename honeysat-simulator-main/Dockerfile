@@ -12,8 +12,7 @@ RUN pip install pybamm \
     pyIGRF==0.3.3 \
     pymongo \
     pillow\
-    matplotlib \
-    python-dotenv
+    matplotlib
 
 # Copy the contents of the current directory into the image at /honeysat-api
 COPY . /honeysat-api
@@ -22,7 +21,7 @@ COPY . /honeysat-api
 WORKDIR /honeysat-api
 
 # Set the PYTHONPATH environment variable
-ENV PYTHONPATH=/honeysat-api
+ENV PYTHONPATH /honeysat-api
 
 EXPOSE 8001
 EXPOSE 8002
