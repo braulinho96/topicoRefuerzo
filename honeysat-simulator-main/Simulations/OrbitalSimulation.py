@@ -46,6 +46,10 @@ class OrbitalSimulation(Simulation):
 
         self.__sun_orientation = np.array([0.0, 0.0, 0.0])
         self.__earth_orientation = np.array([0.0, 0.0, 0.0])
+        
+        self.__position = np.array([0.0, 0.0, 0.0]) # Posición en km
+        self.__velocity = np.array([0.0, 0.0, 0.0]) # Velocidad en km/s
+        
 
         # Initialize all attributes to default values
         self.__distance_to_earth_center = 0.0
@@ -284,6 +288,14 @@ class OrbitalSimulation(Simulation):
         else:
             return True
 
+    # Archivo: OrbitalSimulation.py: (Método nuevo dentro de la clase)
+
+    def get_position(self) -> np.ndarray:
+        """
+        Retorna la posición del satélite en el marco de coordenadas geocéntrico (Inercial).
+        """
+        return self.__position
+    
     def __update_orbital_data(self, current_time: datetime):
         """
         It updates the orbital data of the satellite.
@@ -298,6 +310,9 @@ class OrbitalSimulation(Simulation):
 
         # Compute the position of the satellite at the current time
         geocentric = self.satellite.at(now)
+        
+        self.__position = geocentric.position.km
+        self.__velocity = geocentric.velocity.km_per_s
 
         # Compute the position of the satellite relative to observer (ground station)
         difference = self.satellite - self.observer

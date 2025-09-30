@@ -129,18 +129,15 @@ class CubeSatDetumblingEnv(gym.Env):
     def _update_simulators(self, current_time: datetime):
         """ Actualizar los simuladores segun el tiempo simulado """
         self.rotation_sim.update_simulation(current_time)
-        self.orbital_sim.update_simulation(current_time)
-        self.magnetic_sim.update_simulation(current_time)
+        #self.orbital_sim.update_simulation(current_time)
+        #self.magnetic_sim.update_simulation(current_time)
+
+    # Archivo: cubesat_detumbling_rl.py
 
     def reset(self, seed=None, options=None):
         """
         Función para reiniciar el entorno y comenzar un nuevo episodio.
-        Args:
-            seed (int): Semilla aleatoria para reproducibilidad
-            options (dict): Opciones adicionales (no utilizadas)
-
-        Returns:
-            tuple: (observación, información)
+        ...
         """
         super().reset(seed=seed)
 
@@ -149,28 +146,38 @@ class CubeSatDetumblingEnv(gym.Env):
 
         # condiciones iniciales aleatorias o fijas
         initial_angular_velocity = self.np_random.uniform(-1.0, 1.0, size=3)
-        # initial_angular_velocity = np.array([1.0, 0.0, 0.0])
-
         initial_quat = self.np_random.normal(size=4)
-        # initial_quat = np.array([1.0, 0.0, 0.0, 0.0])
 
         # Setear condiciones iniciales
         initial_quat /= np.linalg.norm(initial_quat)
         self.rotation_sim.angular_velocity = initial_angular_velocity
         self.rotation_sim.quaternion = initial_quat
 
-        # empezar simulaciones con nuevas condiciones
-        # self._start_simulators()
-
         # reiniciar tracking
         self.current_step = 0
         self.episode_reward = 0.0
         self.current_time = self.start_time
 
+        # *** OPTIMIZACIÓN: Calcular y guardar el estado inicial (t_start) de órbita/magnético. ***
+        # Actualizar simuladores al tiempo actual (current_time)
         self.orbital_sim.update_simulation(self.current_time)
         self.magnetic_sim.update_simulation(self.current_time)
+        
+        # Guardar el estado inicial para la interpolación en el primer STEP (USANDO GETTERS)
+        self._pos_start = self.orbital_sim.get_position().copy()
+        
+        # CORRECCIÓN FINAL: Convertir a np.array antes de .copy()
+        if hasattr(self.magnetic_sim, 'get_magnetic_field'):
+            mag_field_tuple = self.magnetic_sim.get_magnetic_field()
+            self._mag_start = np.array(mag_field_tuple).copy() 
+        else:
+            self._mag_start = self.magnetic_sim.magnetic_field.copy() 
 
-        observation = self._get_observation()
+        # La primera observación usa el campo magnético rotado
+        mag_field_inertial_T = self._mag_start * 1e-9
+        mag_field_body_initial = self._rotate_vector_by_quaternion(mag_field_inertial_T, initial_quat)
+
+        observation = self._get_observation(mag_field_body_initial)
         info = {}
 
         if self.render_mode == 'human':
@@ -181,41 +188,74 @@ class CubeSatDetumblingEnv(gym.Env):
     def step(self, action):
         """
         Ejecuta un solo paso en el entorno dentro de un episodio.
-
-        Args:
-            action (np.ndarray): Comando en 3 dimensiones representando el torque
-
-        Returns:
-            tuple: (observación, recompensa, terminado, truncado, información) /
-                   (observation, reward, terminated, truncated, info)
+        ...
         """
         # mapear accion discreta a vector de torque
         torque_action = self.action_map[action]
 
-        ### TEST: Compare with a simple proportional controller
-        # G = 1e-3
-        # torque_action = -self.rotation_sim.angular_velocity*G
-        ###
-
         # aplicar accion de torque al simulador de rotacion
         self.rotation_sim.set_torque(torque_action)
 
+        # *** OPTIMIZACIÓN: Realizar cálculos caros solo 1 vez por step (t_end) ***
+        
+        time_end = self.current_time + timedelta(seconds=self.time_step)
+        
+        # 1. Actualizar simuladores al tiempo FINAL (t_end)
+        self.orbital_sim.update_simulation(time_end)
+        self.magnetic_sim.update_simulation(time_end)
+        
+        # 2. Capturar el estado 'end' del step usando GETTERS
+        self._pos_end = self.orbital_sim.get_position().copy()
+        
+        # CORRECCIÓN FINAL: Convertir a np.array antes de .copy()
+        if hasattr(self.magnetic_sim, 'get_magnetic_field'):
+            mag_field_tuple = self.magnetic_sim.get_magnetic_field()
+            self._mag_end = np.array(mag_field_tuple).copy()
+        else:
+            self._mag_end = self.magnetic_sim.magnetic_field.copy()
+        
         # Avanzar la simulacion con una granularidad menor
         dt = self.time_step / self.sim_granularity
+        
+        mag_field_body_final = np.zeros(3) # Para la observación final
+        
         for i in range(self.sim_granularity):
+            # 1. Avanzar el tiempo y actualizar SÓLO ROTACIÓN
             self.current_time += timedelta(seconds=dt) # Avanzar el tiempo en el step definido
-            self._update_simulators(self.current_time) # Actualizar las simulaciones
+            self._update_simulators(self.current_time) # Actualiza SOLO RotationSimulation
+
+            # 2. INTERPOLACIÓN LINEAL para Magnético
+            # Factor de avance lineal dentro del step [0.0, 1.0]
+            alpha = (i + 1) / self.sim_granularity
+            
+            # Interpolación del campo magnético (en nT)
+            mag_field_inertial_interp = self._mag_start + alpha * (self._mag_end - self._mag_start)
+            
+            # Solo guardamos el campo magnético interpolado en la última iteración
+            if i == (self.sim_granularity - 1):
+                # Rotar el campo magnético (Inercial -> Cuerpo) para la observación final
+                quaternion = self.rotation_sim.quaternion.copy()
+                
+                # Conversión de nT a T antes de la rotación
+                mag_field_inertial_T = mag_field_inertial_interp * 1e-9
+                mag_field_body_final = self._rotate_vector_by_quaternion(mag_field_inertial_T, quaternion)
 
 
-            # obtener nueva observacion
-            observation = self._get_observation()
-            # Guardar historicos para graficar
+            # Guardar historicos para graficar (si está activo)
             if self._debug:
-                # Agregar el torque también al historico
-                observation = np.concatenate((observation, torque_action))
-                self._observation_hist.append(observation)
-                # Agregar el tiempo al historico
+                current_quat = self.rotation_sim.quaternion.copy()
+                current_vel = self.rotation_sim.angular_velocity.copy()
+                
+                obs_hist = np.concatenate([current_quat, current_vel, mag_field_body_final, torque_action])
+                self._observation_hist.append(obs_hist)
                 self._time_hist.append(self.current_time.timestamp())
+
+        # *** PREPARACIÓN PARA EL PRÓXIMO STEP ***
+        self._pos_start = self._pos_end.copy() 
+        self._mag_start = self._mag_end.copy()
+        
+        # obtener nueva observacion (usa mag_field_body_final interpolado)
+        observation = self._get_observation(mag_field_body_final)
 
         # calcular recompensa
         reward = self._calculate_reward(torque_action)
@@ -230,7 +270,6 @@ class CubeSatDetumblingEnv(gym.Env):
             terminated = False
 
         # revisar si ocurre un timeout episodico
-        # parametro "truncated" (revisar docs en gymnasium)
         self.current_step += 1
         truncated = self.current_step >= self.max_steps
 
@@ -246,48 +285,6 @@ class CubeSatDetumblingEnv(gym.Env):
 
         return observation, reward, terminated, truncated, info
 
-    def _get_observation(self):
-        """
-        Obtener la observación actual del simulador.
-
-        Returns:
-            np.ndarray: Vector de observación: [quat(4), angular_vel(3), mag_field(3)]
-        """
-        try:
-            # obtener estado del simulador de rotación
-            quaternion = self.rotation_sim.quaternion.copy()
-            angular_velocity = self.rotation_sim.angular_velocity.copy()
-
-            # obtener info del campo magnetico
-            try:
-                # Call the method directly instead of sending a request
-                mag_field_data = self.magnetic_sim.magnetic_field
-                # extraer componentes x, y, z y convertir de nT a T
-                mag_field_inertial = np.array([
-                    mag_field_data[0], # north
-                    mag_field_data[1], # east
-                    mag_field_data[2]  # vertical
-                ]) * 1e-9
-
-                # rotar campo magnetico de inercial a cuerpo usando quaternion
-                mag_field_body = self._rotate_vector_by_quaternion(mag_field_inertial, quaternion)
-
-            except Exception as e:
-                print(f"Warning: Could not get magnetic field: {e}")
-                mag_field_body = np.zeros(3)
-
-            observation = np.concatenate([
-                quaternion,
-                angular_velocity,
-                mag_field_body
-            ]).astype(np.float32)
-
-            return observation
-
-        except Exception as e:
-            print(f"Error getting observation: {e}")
-            # retornar observacion default en caso de fallo
-            return np.zeros(10, dtype=np.float32)
 
     def _rotate_vector_by_quaternion(self, vector, quaternion):
         """
@@ -421,6 +418,35 @@ class CubeSatDetumblingEnv(gym.Env):
 
         plt.show(block=True)
 
+    def _get_observation(self, mag_field_body):
+        """
+        Obtener la observación actual del simulador usando el campo magnético interpolado.
+
+        Returns:
+            np.ndarray: Vector de observación: [quat(4), angular_vel(3), mag_field(3)]
+        """
+        try:
+            # obtener estado del simulador de rotación
+            quaternion = self.rotation_sim.quaternion.copy()
+            angular_velocity = self.rotation_sim.angular_velocity.copy()
+
+            observation = np.concatenate([
+                quaternion,
+                angular_velocity,
+                mag_field_body
+            ]).astype(np.float32)
+
+            return observation
+
+        except Exception as e:
+            print(f"Error getting observation: {e}")
+            # retornar observacion default en caso de fallo
+            return np.zeros(10, dtype=np.float32)
+
+        except Exception as e:
+            print(f"Error getting observation: {e}")
+            # retornar observacion default en caso de fallo
+            return np.zeros(10, dtype=np.float32)
 
 def test_environment_basic():
     """

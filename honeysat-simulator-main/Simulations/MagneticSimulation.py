@@ -82,6 +82,13 @@ class MagneticSimulation(Simulation):
     def update_simulation(self, current_time: datetime):
         self.last_run_time = current_time
         self.magnetic_field = self.get_earth_magnetic_field(current_time)
+    
+
+    def get_magnetic_field(self) -> np.ndarray:
+        """
+        Retorna el campo magnético de la Tierra en el marco de coordenadas Inercial (nT).
+        """
+        return self.magnetic_field
 
     def _check_time_elapsed(self):
         current_time = datetime.now()
