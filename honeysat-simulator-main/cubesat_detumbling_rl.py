@@ -91,6 +91,9 @@ class CubeSatDetumblingEnv(gym.Env):
         # ajustable dependiendo de la misión y el contexto
         self.success_threshold = 0.01  # rad/s
 
+        # Registro de la velocidad anterior para bonus de recompenza
+        self.prev_angular_vel_norm = None
+
         # Para efectos de debug, guardar un historial de observaciones y graficarlas
         self._debug = debug  # Debug activado
         self._observation_hist = []  # Historico de observaciones
@@ -157,6 +160,7 @@ class CubeSatDetumblingEnv(gym.Env):
         self.current_step = 0
         self.episode_reward = 0.0
         self.current_time = self.start_time
+        self.prev_angular_vel_norm = None
 
         # *** OPTIMIZACIÓN: Calcular y guardar el estado inicial (t_start) de órbita/magnético. ***
         # Actualizar simuladores al tiempo actual (current_time)
@@ -341,9 +345,23 @@ class CubeSatDetumblingEnv(gym.Env):
         # puede ser cambiada, requiere experimentación
         reward = -angular_vel_norm - 0.01 * control_effort
 
+        # aplicar bonus si es que hubo una reducción significativa en la velocidad angular
+        if self.prev_angular_vel_norm is not None:
+            reduction = self.prev_angular_vel_norm - angular_vel_norm
+            if reduction > 0.05 * self.prev_angular_vel_norm:  # >5% reducción
+                reward += 1.0
+            elif reduction > 0.1 * self.prev_angular_vel_norm:  # >10% reducción
+                reward += 2.0
+            elif reduction > 0.2 * self.prev_angular_vel_norm:  # >20% reducción
+                reward += 3.0
+
         # acá se aplica bonus si es que se logra una velocidad angular muy baja
         if angular_vel_norm < self.success_threshold:
+            print("🎉 SUCCESS: Detumbling achieved!")
             reward += 10.0
+        
+        #Actualizar velocidad anterior
+        self.prev_angular_vel_norm = angular_vel_norm
 
         return reward
 
