@@ -63,14 +63,14 @@ def softmax(x, tau=1.0):
     exp_x = np.exp(x / tau)
     return exp_x / np.sum(exp_x)
 
-def train_q_learning(episodes=20000, max_steps=500, learning_rate=0.2, discount_factor=0.99, epsilon=1.0, epsilon_decay=0.999, min_epsilon=0.01):
+def train_q_learning(episodes=500, max_steps=1000, learning_rate=0.5, discount_factor=0.99, epsilon=1.0, epsilon_decay=0.999, min_epsilon=0.05):
     """Entrena un agente de Q-learning en el entorno de detumbling del CubeSat."""
     print("🚀 INICIANDO ENTRENAMIENTO DE Q-LEARNING")
     print(f"📈 Episodios totales: {episodes:,}")
     print("=" * 50)
 
     env = CubeSatDetumblingEnv(max_steps=max_steps)
-    numero_bins =20
+    numero_bins =12
     # Bins de discretización para la velocidad angular (3 dimensiones)
     bins = np.linspace(-1.5, 1.5, numero_bins)
     ang_vel_bins = [bins, bins, bins]
@@ -91,12 +91,17 @@ def train_q_learning(episodes=20000, max_steps=500, learning_rate=0.2, discount_
         step_count = 0
 
         while not done and step_count < max_steps:
-            # Eleccion Epsilon-greedy
+            # Eleccion Epsilon-greedy, sacando la opcion max
+
             if np.random.rand() < epsilon:
-                action = env.action_space.sample() 
+                # Acción aleatoria distinta de la acción greedy
+                greedy_action = np.argmax(q_table[state, :])
+                possible_actions = list(range(env.action_space.n))
+                possible_actions.remove(greedy_action)
+                action = np.random.choice(possible_actions)
             else:
+                # Acción greedy
                 action = np.argmax(q_table[state, :])
-            
             # Utilizando softmax para selección de acción
             #probs = softmax(q_table[state, :], tau=1.0)
             #action = np.random.choice(np.arange(num_actions), p=probs)
@@ -351,6 +356,7 @@ def test_q_learning(q_table, ang_vel_bins, episodes=100, max_steps=100, agent_na
     print(f"🚶 Pasos promedio: {avg_steps:.2f}")
     print("=" * 50)
     return avg_reward, avg_steps
+
 if __name__ == "__main__":
     print("🛰️  DEMO DE AGENTE DE APRENDIZAJE POR REFUERZO DE DETUMBLING")
     print()
@@ -360,10 +366,7 @@ if __name__ == "__main__":
     #evaluate_agent(q_table_random, ang_vel_bins_random, episodes=10, max_steps=100, agent_name="Aleatorio")
 
     # 2. Entrenamiento y evaluación del agente de Q-learning
-    q_table_ql, ang_vel_bins_ql, rewards_ql = train_q_learning(episodes=1000, max_steps=100)
-    
-    
-    test_q_learning(q_table_ql, ang_vel_bins_ql, episodes=100, max_steps=100, agent_name="Q-Learning")
+    q_table_ql, ang_vel_bins_ql, rewards_ql = train_q_learning(episodes=500, max_steps=1000)
     
 
     # 3. Entrenamiento y evaluación del agente de Monte Carlo

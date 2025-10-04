@@ -348,12 +348,12 @@ class CubeSatDetumblingEnv(gym.Env):
         # aplicar bonus si es que hubo una reducción significativa en la velocidad angular
         if self.prev_angular_vel_norm is not None:
             reduction = self.prev_angular_vel_norm - angular_vel_norm
-            if reduction > 0.05 * self.prev_angular_vel_norm:  # >5% reducción
-                reward += 1.0
+            if reduction > 0.2 * self.prev_angular_vel_norm:  # >20% reducción
+                reward += 3.0
             elif reduction > 0.1 * self.prev_angular_vel_norm:  # >10% reducción
                 reward += 2.0
-            elif reduction > 0.2 * self.prev_angular_vel_norm:  # >20% reducción
-                reward += 3.0
+            elif reduction > 0.05 * self.prev_angular_vel_norm:  # >5% reducción
+                reward += 1.0
 
         # acá se aplica bonus si es que se logra una velocidad angular muy baja
         if angular_vel_norm < self.success_threshold:
