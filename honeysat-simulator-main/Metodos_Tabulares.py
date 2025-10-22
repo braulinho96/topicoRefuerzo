@@ -142,7 +142,7 @@ def train_q_learning(episodes=500, max_steps=1000, learning_rate=0.5, discount_f
 
     return q_table, ang_vel_bins, total_rewards
 
-def train_monte_carlo(episodes=10, max_steps=500, gamma=0.7, epsilon=1.0, epsilon_decay=0.995, min_epsilon=0.01):
+def train_monte_carlo(episodes=2000, max_steps=200, gamma=0.99, epsilon=1.0, epsilon_decay=0.995, min_epsilon=0.01):
     """Entrena un agente de Monte Carlo en el entorno de detumbling del CubeSat."""
     print("=" * 50)
     print("💰 INICIANDO ENTRENAMIENTO DE MONTE CARLO")
@@ -151,9 +151,9 @@ def train_monte_carlo(episodes=10, max_steps=500, gamma=0.7, epsilon=1.0, epsilo
 
     env = CubeSatDetumblingEnv(max_steps=max_steps)
     ang_vel_bins = [
-        np.linspace(-1.5, 1.5, 10),
-        np.linspace(-1.5, 1.5, 10),
-        np.linspace(-1.5, 1.5, 10)
+        np.linspace(-1.5, 1.5, 5),
+        np.linspace(-1.5, 1.5, 5),
+        np.linspace(-1.5, 1.5, 5)
     ]
     
     numero_bins = 10
@@ -207,8 +207,9 @@ def train_monte_carlo(episodes=10, max_steps=500, gamma=0.7, epsilon=1.0, epsilo
     
     return q_table, ang_vel_bins, total_rewards
 
+
 def evaluate_agent(q_table, ang_vel_bins, episodes=10, max_steps=100, agent_name="Q-Learning"): 
-    """Evalúa un agente entrenado."""
+    """Evalúa un agente entrenado y muestra métricas con gráficos."""
     print("\n" + "=" * 50)
     print(f"📈 INICIANDO EVALUACIÓN DEL AGENTE {agent_name.upper()}")
     print(f"🔬 Episodios de evaluación: {episodes}")
@@ -231,6 +232,7 @@ def evaluate_agent(q_table, ang_vel_bins, episodes=10, max_steps=100, agent_name
             total_reward += reward
             step_count += 1
             done = terminated or truncated
+
         total_rewards.append(total_reward)
 
         if terminated:
@@ -241,15 +243,21 @@ def evaluate_agent(q_table, ang_vel_bins, episodes=10, max_steps=100, agent_name
 
     eval_env.close()
 
+    # Calcular métricas
+    mean_reward = np.mean(total_rewards)
+    max_reward = np.max(total_rewards)
+    min_reward = np.min(total_rewards)
+    std_reward = np.std(total_rewards)
+    success_rate = success_count / episodes * 100
+
     print("\n" + "=" * 50)
     print(f"📊 RESUMEN DE EVALUACIÓN ({agent_name.upper()})")
-    print(f"🏆 Tasa de éxito: {success_count}/{episodes} ({success_count/episodes*100:.1f}%)")
-    print(f"📈 Recompensa promedio: {np.mean(total_rewards):.2f}")
-    print(f"📉 Recompensa máxima: {np.max(total_rewards):.2f}")
-    print(f"📉 Recompensa mínima: {np.min(total_rewards):.2f}")
-    print(f"📊 Desviación estándar de la recompensa: {np.std(total_rewards):.2f}")
+    print(f"🏆 Tasa de éxito: {success_count}/{episodes} ({success_rate:.1f}%)")
+    print(f"📈 Recompensa promedio: {mean_reward:.2f}")
+    print(f"📈 Recompensa máxima: {max_reward:.2f}")
+    print(f"📉 Recompensa mínima: {min_reward:.2f}")
+    print(f"📊 Desviación estándar de la recompensa: {std_reward:.2f}")
     print("=" * 50)
-    return total_rewards
 
 def running_average(x, N):
     """
@@ -362,8 +370,8 @@ if __name__ == "__main__":
     print()
     
     # 1. Evaluación del agente aleatorio (línea de base)
-    #q_table_random, ang_vel_bins_random, rewards_random = run_random_agent(episodes=3, max_steps=100)
-    #evaluate_agent(q_table_random, ang_vel_bins_random, episodes=10, max_steps=100, agent_name="Aleatorio")
+    #q_table_random, ang_vel_bins_random, rewards_random = run_random_agent(episodes=100, max_steps=250)
+    #evaluate_agent(q_table_random, ang_vel_bins_random, episodes=100, max_steps=250, agent_name="Aleatorio")
 
     # 2. Entrenamiento y evaluación del agente de Q-learning
     q_table_ql, ang_vel_bins_ql, rewards_ql = train_q_learning(episodes=500, max_steps=1000)
