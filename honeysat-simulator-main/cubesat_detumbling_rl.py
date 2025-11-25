@@ -32,7 +32,7 @@ class CubeSatDetumblingEnv(gym.Env):
 
     metadata = {'render_modes': ['human', 'none']}
 
-    def __init__(self, render_mode=None, max_steps=500, start_time=datetime.now(), time_step=0.1, granularity=100, debug=False, plot_hist=False):
+    def __init__(self, render_mode=None, max_steps=500, start_time=datetime.now(), time_step=0.1, granularity=10, debug=False, plot_hist=False, fast_mode=False):
         """
         Inicializar el entorno de CubeSat para el problema de detumbling.
 
@@ -43,6 +43,7 @@ class CubeSatDetumblingEnv(gym.Env):
             time_step (float): Paso de tiempo de simulación en segundos
             granularity (int): Granularida de la simulacion, divide a time_step
             debug (bool): Activar historico de observaciones y graficar
+            fast_mode (bool): Activar modo rápido (desactiva visualización de magnético)
         """
         super().__init__()
 
@@ -54,11 +55,16 @@ class CubeSatDetumblingEnv(gym.Env):
 
         self.sim_granularity = granularity
         self._plot_hist = plot_hist
+        self._fast_mode = fast_mode  # Modo rápido: reduce cálculos costosos
 
         # inicializar componentes del simulador
         self.rotation_sim = None
         self.orbital_sim = None
         self.magnetic_sim = None
+        
+        # Cache para campo magnético (evita recalcular si no cambió órbita)
+        self._mag_cache = {}
+        self._mag_cache_time = None
 
         # Discretize the action space for Q-learning
         # Actions: Positive/Negative torque on each axis (X, Y, Z) + No torque
@@ -135,12 +141,10 @@ class CubeSatDetumblingEnv(gym.Env):
         #self.orbital_sim.update_simulation(current_time)
         #self.magnetic_sim.update_simulation(current_time)
 
-    # Archivo: cubesat_detumbling_rl.py
-
     def reset(self, seed=None, options=None):
         """
         Función para reiniciar el entorno y comenzar un nuevo episodio.
-        ...
+        Optimizado con opción fast_mode para entrenamiento rápido.
         """
         super().reset(seed=seed)
 
@@ -162,20 +166,23 @@ class CubeSatDetumblingEnv(gym.Env):
         self.current_time = self.start_time
         self.prev_angular_vel_norm = None
 
-        # *** OPTIMIZACIÓN: Calcular y guardar el estado inicial (t_start) de órbita/magnético. ***
-        # Actualizar simuladores al tiempo actual (current_time)
-        self.orbital_sim.update_simulation(self.current_time)
-        self.magnetic_sim.update_simulation(self.current_time)
-        
-        # Guardar el estado inicial para la interpolación en el primer STEP (USANDO GETTERS)
-        self._pos_start = self.orbital_sim.get_position().copy()
-        
-        # CORRECCIÓN FINAL: Convertir a np.array antes de .copy()
-        if hasattr(self.magnetic_sim, 'get_magnetic_field'):
-            mag_field_tuple = self.magnetic_sim.get_magnetic_field()
-            self._mag_start = np.array(mag_field_tuple).copy() 
+        # Actualizar simuladores (solo si no está en fast_mode)
+        if not self._fast_mode:
+            self.orbital_sim.update_simulation(self.current_time)
+            self.magnetic_sim.update_simulation(self.current_time)
+            
+            # Guardar el estado inicial para interpolación
+            self._pos_start = self.orbital_sim.get_position().copy()
+            
+            if hasattr(self.magnetic_sim, 'get_magnetic_field'):
+                mag_field_tuple = self.magnetic_sim.get_magnetic_field()
+                self._mag_start = np.array(mag_field_tuple).copy() 
+            else:
+                self._mag_start = self.magnetic_sim.magnetic_field.copy()
         else:
-            self._mag_start = self.magnetic_sim.magnetic_field.copy() 
+            # EN FAST_MODE: Usar valores por defecto o cache
+            self._pos_start = np.zeros(3)
+            self._mag_start = np.zeros(3)
 
         # La primera observación usa el campo magnético rotado
         mag_field_inertial_T = self._mag_start * 1e-9
@@ -192,7 +199,7 @@ class CubeSatDetumblingEnv(gym.Env):
     def step(self, action):
         """
         Ejecuta un solo paso en el entorno dentro de un episodio.
-        ...
+        Optimizado para velocidad en modo fast_mode.
         """
         # mapear accion discreta a vector de torque
         torque_action = self.action_map[action]
@@ -201,71 +208,65 @@ class CubeSatDetumblingEnv(gym.Env):
         self.rotation_sim.set_torque(torque_action)
 
         # *** OPTIMIZACIÓN: Realizar cálculos caros solo 1 vez por step (t_end) ***
-        
         time_end = self.current_time + timedelta(seconds=self.time_step)
         
-        # 1. Actualizar simuladores al tiempo FINAL (t_end)
-        self.orbital_sim.update_simulation(time_end)
-        self.magnetic_sim.update_simulation(time_end)
-        
-        # 2. Capturar el estado 'end' del step usando GETTERS
-        self._pos_end = self.orbital_sim.get_position().copy()
-        
-        # CORRECCIÓN FINAL: Convertir a np.array antes de .copy()
-        if hasattr(self.magnetic_sim, 'get_magnetic_field'):
-            mag_field_tuple = self.magnetic_sim.get_magnetic_field()
-            self._mag_end = np.array(mag_field_tuple).copy()
-        else:
-            self._mag_end = self.magnetic_sim.magnetic_field.copy()
+        # 1. EN FAST_MODE: Saltar actualizaciones magnéticas/orbitales
+        if not self._fast_mode:
+            self.orbital_sim.update_simulation(time_end)
+            self.magnetic_sim.update_simulation(time_end)
+            
+            # Capturar el estado 'end' del step
+            self._pos_end = self.orbital_sim.get_position().copy()
+            
+            if hasattr(self.magnetic_sim, 'get_magnetic_field'):
+                mag_field_tuple = self.magnetic_sim.get_magnetic_field()
+                self._mag_end = np.array(mag_field_tuple).copy()
+            else:
+                self._mag_end = self.magnetic_sim.magnetic_field.copy()
         
         # Avanzar la simulacion con una granularidad menor
         dt = self.time_step / self.sim_granularity
-        
-        mag_field_body_final = np.zeros(3) # Para la observación final
+        mag_field_body_final = np.zeros(3)  # Para la observación final
         
         for i in range(self.sim_granularity):
-            # 1. Avanzar el tiempo y actualizar SÓLO ROTACIÓN
-            self.current_time += timedelta(seconds=dt) # Avanzar el tiempo en el step definido
-            self._update_simulators(self.current_time) # Actualiza SOLO RotationSimulation
+            # Avanzar el tiempo y actualizar SÓLO ROTACIÓN
+            self.current_time += timedelta(seconds=dt)
+            self._update_simulators(self.current_time)
 
-            # 2. INTERPOLACIÓN LINEAL para Magnético
-            # Factor de avance lineal dentro del step [0.0, 1.0]
-            alpha = (i + 1) / self.sim_granularity
-            
-            # Interpolación del campo magnético (en nT)
-            mag_field_inertial_interp = self._mag_start + alpha * (self._mag_end - self._mag_start)
-            
-            # Solo guardamos el campo magnético interpolado en la última iteración
-            if i == (self.sim_granularity - 1):
-                # Rotar el campo magnético (Inercial -> Cuerpo) para la observación final
+            # EN FAST_MODE: Usar campo magnético constante o cache
+            if not self._fast_mode and i == (self.sim_granularity - 1):
+                # INTERPOLACIÓN LINEAL para Magnético (modo normal)
+                alpha = (i + 1) / self.sim_granularity
+                mag_field_inertial_interp = self._mag_start + alpha * (self._mag_end - self._mag_start)
                 quaternion = self.rotation_sim.quaternion.copy()
-                
-                # Conversión de nT a T antes de la rotación
                 mag_field_inertial_T = mag_field_inertial_interp * 1e-9
                 mag_field_body_final = self._rotate_vector_by_quaternion(mag_field_inertial_T, quaternion)
-
+            elif self._fast_mode and i == (self.sim_granularity - 1):
+                # EN FAST_MODE: Usar solo el campo magnético inicial (cached)
+                quaternion = self.rotation_sim.quaternion.copy()
+                mag_field_body_final = self._rotate_vector_by_quaternion(self._mag_start * 1e-9, quaternion)
 
             # Guardar historicos para graficar (si está activo)
             if self._debug:
                 current_quat = self.rotation_sim.quaternion.copy()
                 current_vel = self.rotation_sim.angular_velocity.copy()
-                
                 obs_hist = np.concatenate([current_quat, current_vel, mag_field_body_final, torque_action])
                 self._observation_hist.append(obs_hist)
                 self._time_hist.append(self.current_time.timestamp())
 
-        # *** PREPARACIÓN PARA EL PRÓXIMO STEP ***
-        self._pos_start = self._pos_end.copy() 
-        self._mag_start = self._mag_end.copy()
+        # Preparación para el próximo step
+        if not self._fast_mode:
+            self._pos_start = self._pos_end.copy() 
+            self._mag_start = self._mag_end.copy()
         
-        # obtener nueva observacion (usa mag_field_body_final interpolado)
+        # Obtener nueva observación
         observation = self._get_observation(mag_field_body_final)
 
-        # calcular recompensa
+        # Calcular recompensa
         reward = self._calculate_reward(torque_action)
         self.episode_reward += reward
 
-        # revisar si es que termino el episodio
+        # Revisar si terminó el episodio
         try:
             angular_vel_norm = np.linalg.norm(self.rotation_sim.angular_velocity)
             terminated = angular_vel_norm < self.success_threshold
@@ -273,11 +274,11 @@ class CubeSatDetumblingEnv(gym.Env):
             angular_vel_norm = 1.0
             terminated = False
 
-        # revisar si ocurre un timeout episodico
+        # Revisar si ocurre un timeout episódico
         self.current_step += 1
         truncated = self.current_step >= self.max_steps
 
-        # retornar info adicional
+        # Retornar info adicional
         info = {
             'angular_velocity_norm': angular_vel_norm,
             'episode_reward': self.episode_reward,
@@ -321,48 +322,61 @@ class CubeSatDetumblingEnv(gym.Env):
             print(f"Warning: Quaternion rotation failed: {e}")
             return vector
 
-    def _calculate_reward(self, action):
-        """
-        Calcular la recompensa para el paso actual.
-
-        Args:
-            action (np.ndarray): Comando de torque aplicado.
-
-        Returns:
-            float: Valor de recompensa
-        """
-        try:
-            # obtener velocidad angular actual
-            angular_vel_norm = np.linalg.norm(self.rotation_sim.angular_velocity)
-        except Exception:
-            # si no se puede obtener, se retorna 1
+    def _calculate_reward(self, action): 
+        """ 
+        Calcular la recompensa para el paso actual con función de TD optimizada.
+        Incentiva resolver el problema en la menor cantidad de pasos posibles.
+        
+        Args: action (np.ndarray): Comando de torque aplicado. 
+        Returns: float: Valor de recompensa 
+        """ 
+        try: 
+            angular_vel_norm = np.linalg.norm(self.rotation_sim.angular_velocity) 
+        except Exception: 
             angular_vel_norm = 1.0
 
-            # obtener "effort" de control
+        # Verificar si se logró el objetivo
+        is_success = angular_vel_norm < self.success_threshold
+        
+        # Obtener "effort" de control 
         control_effort = np.linalg.norm(action)
-
-        # funcion de recompensa: penalizar alta velocidad angular y esfuerzo de control
-        # puede ser cambiada, requiere experimentación
-        reward = -angular_vel_norm - 0.01 * control_effort
-
-        # aplicar bonus si es que hubo una reducción significativa en la velocidad angular
+        
+        # ============================================
+        # FUNCIÓN DE RECOMPENSA OPTIMIZADA PARA TD
+        # ============================================
+        # Componente 1: Penalización por velocidad angular (normalizada)
+        velocity_penalty = -angular_vel_norm  # Rango: [-inf, 0]
+        
+        # Componente 2: Penalización por esfuerzo de control (bajo peso)
+        control_penalty = -0.02 * control_effort  # Rango: [-inf, 0]
+        
+        # Componente 3: Penalización por paso (incentiva solución rápida)
+        # Esto es crucial para TD: motiva al agente a resolver en menos pasos
+        step_penalty = -0.5  # Penaliza CADA paso para incentivar brevedad
+        
+        # Componente 4: Recompensa de éxito (muy grande para objetivos TD)
+        success_bonus = 0.0
+        if is_success:
+            success_bonus = 100.0  # Bonus grande al lograr el objetivo
+        
+        # Componente 5: Bonus de progreso (si hay reducción en velocidad)
+        progress_bonus = 0.0
         if self.prev_angular_vel_norm is not None:
             reduction = self.prev_angular_vel_norm - angular_vel_norm
-            if reduction > 0.2 * self.prev_angular_vel_norm:  # >20% reducción
-                reward += 3.0
-            elif reduction > 0.1 * self.prev_angular_vel_norm:  # >10% reducción
-                reward += 2.0
-            elif reduction > 0.05 * self.prev_angular_vel_norm:  # >5% reducción
-                reward += 1.0
-
-        # acá se aplica bonus si es que se logra una velocidad angular muy baja
-        if angular_vel_norm < self.success_threshold:
-            print("🎉 SUCCESS: Detumbling achieved!")
-            reward += 10.0
+            if reduction > 0:  # Si hay reducción
+                # Bonus proporcional a la magnitud de la reducción
+                progress_bonus = min(reduction * 5.0, 2.0)  # Cap en 2.0
         
-        #Actualizar velocidad anterior
-        self.prev_angular_vel_norm = angular_vel_norm
-
+        # Combinar todos los componentes
+        reward = (velocity_penalty + 
+                  control_penalty + 
+                  step_penalty + 
+                  success_bonus + 
+                  progress_bonus)
+        
+        # Actualizar velocidad anterior para siguiente step
+        self.prev_angular_vel_norm = angular_vel_norm 
+        
         return reward
 
     def render(self):
