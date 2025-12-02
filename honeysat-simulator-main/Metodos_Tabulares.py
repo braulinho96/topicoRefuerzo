@@ -142,7 +142,7 @@ def run_random_agent(episodes=100, max_steps=3000, repeats_per_step=5):
     mean_rewards_per_episode = []
     std_rewards_per_episode = []
     mean_steps_per_episode = []
-    std_steps_per_episode = []  # no estimamos error en pasos, lo dejamos en 0
+    std_steps_per_episode = []  # no estimamos error en pasos por repetición macro (queda 0)
 
     for ep in range(episodes):
         obs, _ = env.reset()
@@ -150,7 +150,7 @@ def run_random_agent(episodes=100, max_steps=3000, repeats_per_step=5):
 
         episode_return_mean = 0.0          # suma de recompensas medias por paso
         step_index = 0                     # cuenta de pasos efectivos del episodio
-        step_std_list = []                 # guardamos std de cada paso para propagar error
+        step_stats = []                    # guardamos (std, k) de cada paso para propagar error
 
         while not done and step_index < max_steps:
 
@@ -180,14 +180,19 @@ def run_random_agent(episodes=100, max_steps=3000, repeats_per_step=5):
             # 3) Estadísticas del paso
             mean_step_reward = float(np.mean(rewards_this_step))
             std_step_reward = float(np.std(rewards_this_step))
+            k_rep = max(1, len(rewards_this_step))
 
             episode_return_mean += mean_step_reward
-            step_std_list.append(std_step_reward)
+            # Guardar desviación y número de muestras del paso
+            step_stats.append((std_step_reward, k_rep))
 
-        # 4) Error del episodio: propagamos std de los pasos
-        #    Asumimos independencia y sumamos varianzas: Var(total) ≈ Σ(std_step^2)
-        if len(step_std_list) > 0:
-            episode_std = float(np.sqrt(np.sum(np.array(step_std_list) ** 2)))
+        # 4) Error del episodio: propagamos varianzas de las medias por paso
+        #    Var(mean_step) = Var(step)/k  => Var(total) = Σ Var(mean_step)
+        if len(step_stats) > 0:
+            episode_variance = 0.0
+            for s, k in step_stats:
+                episode_variance += (s ** 2) / max(1, k)
+            episode_std = float(np.sqrt(episode_variance))
         else:
             episode_std = 0.0
 
@@ -537,7 +542,7 @@ def train_sarsa_td(episodes=1000, max_steps=200, learning_rate=0.1, discount_fac
     print("=" * 60 + "\n")
     
     # Guardar tabla Q
-    with open("q_table_sarsa_td.pkl", "wb") as f:
+    with open("q_table_sarsa_td_stepdc_001_3.pkl", "wb") as f:
         pickle.dump(q_table, f)
     
     # Graficar resultados
@@ -608,18 +613,137 @@ def plot_td_results(rewards, steps, successes, episodes):
     axes[1, 1].grid(True, linestyle='--', alpha=0.5)
     
     plt.tight_layout()
-    plt.savefig('sarsa_td_training_results.png', dpi=100, bbox_inches='tight')
-    print("📊 Gráficos guardados en 'sarsa_td_training_results.png'")
+    plt.savefig('sarsa_td_training_result_001_3.png', dpi=100, bbox_inches='tight')
+    print("📊 Gráficos guardados en 'sarsa_td_training_result_001_3.png'")
     plt.show()
+
+def evaluate_q_table(q_table_path=None, episodes=200, max_steps=500, fast_mode=True, granularity=5, render_mode=None):
+    """
+    Evaluar una Q-table guardada ejecutando episodios en modo greedy.
+
+    Args:
+        q_table_path (str): Ruta al archivo .pkl con la q_table. Si es None, usa 'q_table_qlearning.pkl'.
+        episodes (int): Número de episodios de evaluación.
+        max_steps (int): Máximo pasos por episodio.
+        fast_mode (bool): Usar modo rápido del entorno.
+        granularity (int): Granularidad de la simulación.
+        render_mode (str|None): Modo de render ('human') o None.
+
+    Returns:
+        dict: Métricas de evaluación (success_rate, avg_steps, avg_reward, rewards, steps, successes).
+    """
+    import os
+
+    if q_table_path is None:
+        q_table_path = 'q_table_qlearning.pkl'
+
+    if not os.path.exists(q_table_path):
+        raise FileNotFoundError(f"Q-table file not found: {q_table_path}")
+
+    with open(q_table_path, 'rb') as f:
+        q_table = pickle.load(f)
+
+    # Inferir número de estados y por ende bins si es posible
+    num_states = q_table.shape[0]
+    # intentar inferir numero_bins por raíz cúbica (int)
+    numero_bins = int(round(num_states ** (1.0 / 3.0)))
+    if numero_bins ** 3 != num_states:
+        # fallback: usar 12 bins por defecto
+        numero_bins = 12
+
+    bins = np.linspace(-1.5, 1.5, numero_bins)
+    ang_vel_bins = [bins, bins, bins]
+
+    env = CubeSatDetumblingEnv(max_steps=max_steps, granularity=granularity, render_mode=render_mode, fast_mode=fast_mode)
+
+    rewards_per_episode = []
+    steps_per_episode = []
+    successes = []
+
+    for ep in range(episodes):
+        obs, _ = env.reset()
+        state = discretize_state(obs, ang_vel_bins)
+        total_reward = 0.0
+        step_count = 0
+        done = False
+
+        while not done and step_count < max_steps:
+            action = int(np.argmax(q_table[state, :]))
+            next_obs, reward, terminated, truncated, info = env.step(action)
+            total_reward += reward
+            step_count += 1
+            done = terminated or truncated
+            state = discretize_state(next_obs, ang_vel_bins)
+
+        rewards_per_episode.append(total_reward)
+        steps_per_episode.append(step_count)
+        successes.append(1 if done and terminated else 0)
+
+    env.close()
+
+    rewards_per_episode = np.array(rewards_per_episode)
+    steps_per_episode = np.array(steps_per_episode)
+    successes = np.array(successes)
+
+    success_rate = float(np.mean(successes))
+    avg_steps = float(np.mean(steps_per_episode))
+    avg_reward = float(np.mean(rewards_per_episode))
+
+    print("\n" + "="*60)
+    print(f"Evaluación Q-table: {q_table_path}")
+    print(f"Episodios: {episodes} | Success rate: {success_rate*100:.2f}% | Avg steps: {avg_steps:.1f} | Avg reward: {avg_reward:.2f}")
+    print("="*60 + "\n")
+
+    # Guardar métricas y figuras simples
+    results = {
+        'q_table_path': q_table_path,
+        'episodes': episodes,
+        'success_rate': success_rate,
+        'avg_steps': avg_steps,
+        'avg_reward': avg_reward,
+        'rewards': rewards_per_episode,
+        'steps': steps_per_episode,
+        'successes': successes
+    }
+
+    # Gráficos simples
+    try:
+        plt.figure(figsize=(10,4))
+        plt.plot(rewards_per_episode, alpha=0.4, label='Reward per episode')
+        if len(rewards_per_episode) >= 50:
+            plt.plot(np.arange(50, episodes+1), running_average(rewards_per_episode, 50), color='red', label='Running avg(50)')
+        plt.title('Evaluation Rewards')
+        plt.xlabel('Episode')
+        plt.ylabel('Total Reward')
+        plt.legend()
+        plt.tight_layout()
+        fname = f'eval_rewards_{os.path.basename(q_table_path)}.png'
+        plt.savefig(fname)
+
+        plt.figure(figsize=(10,4))
+        plt.hist(steps_per_episode, bins=30)
+        plt.title('Steps per episode (evaluation)')
+        plt.xlabel('Steps')
+        plt.ylabel('Frequency')
+        plt.tight_layout()
+        fname2 = f'eval_steps_{os.path.basename(q_table_path)}.png'
+        plt.savefig(fname2)
+
+        print(f"Gráficos guardados: {fname}, {fname2}")
+    except Exception as e:
+        print(f"No se pudieron generar gráficos: {e}")
+
+    return results
 
 if __name__ == "__main__":
     print("🛰️  DEMO DE AGENTE DE APRENDIZAJE POR REFUERZO DE DETUMBLING")
     print("="*60)
-    print("Elige qué agente entrenar:\n")
-    print("1. SARSA (Temporal Difference) - On-policy, convergencia más rápida")
-    print("2. Q-Learning - Off-policy, convergencia garantizada\n")
-    
-    choice = input("Selecciona (1 o 2): ").strip()
+    print("Elige qué acción ejecutar:\n")
+    print("1. SARSA (Temporal Difference) - Entrenar")
+    print("2. Q-Learning - Entrenar")
+    print("3. Evaluar Q-table entrenada (cargar .pkl y ejecutar greedy)\n")
+
+    choice = input("Selecciona (1, 2 o 3): ").strip()
     
     if choice == "1":
         # ========================================
@@ -627,22 +751,16 @@ if __name__ == "__main__":
         # ========================================
         print("\n" + "="*60)
         print("🚀 AGENTE SARSA (Temporal Difference)")
-        print("="*60)
-        print("⚙️ OPTIMIZACIONES ACTIVAS:")
-        print("   ✓ fast_mode=True    (Desactiva magnético/orbital)")
-        print("   ✓ granularity=5     (Menos iteraciones internas)")
-        print("   ✓ epsilon_decay=0.98 (Exploración más rápida)")
-        print("="*60 + "\n")
         
         start_time = timer.time()
         
         q_table_td, ang_vel_bins_td, rewards_td = train_sarsa_td(
-            episodes=1000,
-            max_steps=150,
-            learning_rate=0.1,
-            discount_factor=0.99,
+            episodes=5000,
+            max_steps=400,
+            learning_rate=0.5,
+            discount_factor=0.2,
             epsilon=1.0,
-            epsilon_decay=0.995,
+            epsilon_decay=0.999,
             min_epsilon=0.05,
             fast_mode=True,
             granularity=5
@@ -667,12 +785,12 @@ if __name__ == "__main__":
         start_time = timer.time()
         
         q_table_ql, ang_vel_bins_ql, rewards_ql = train_q_learning(
-            episodes=100000,
-            max_steps=200,
+            episodes=20000,
+            max_steps=500,
             learning_rate=0.5,
-            discount_factor=0.99,
+            discount_factor=0.2,
             epsilon=1.0,
-            epsilon_decay=0.99,
+            epsilon_decay=0.999,
             min_epsilon=0.05,
             fast_mode=True,
             granularity=5
@@ -681,8 +799,34 @@ if __name__ == "__main__":
         elapsed = timer.time() - start_time
         print(f"\n⏱️  Tiempo total: {elapsed/60:.1f} minutos")
         print(f"📊 Promedio: {elapsed/1000*1000:.1f}ms por episodio")
-    
+
+
+    elif choice == "3":
+        print("\n" + "="*60)
+        print("📖 EVALUAR Q-TABLE GUARDADA")
+        path = input("Ruta al archivo Q-table (.pkl) [default: q_table_qlearning.pkl]: ").strip()
+        if path == "":
+            path = None
+        eps = input("Número de episodios de evaluación [default: 200]: ").strip()
+        try:
+            eps = int(eps) if eps != "" else 200
+        except Exception:
+            eps = 200
+
+        maxs = input("Máx. pasos por episodio [default: 500]: ").strip()
+        try:
+            maxs = int(maxs) if maxs != "" else 500
+        except Exception:
+            maxs = 500
+
+        # Ejecutar evaluación
+        results = evaluate_q_table(q_table_path=path, episodes=eps, max_steps=maxs, fast_mode=True, granularity=5, render_mode=None)
+        print("Resultados de evaluación:")
+        print(f"  Success rate: {results['success_rate']*100:.2f}%")
+        print(f"  Avg steps: {results['avg_steps']:.1f}")
+        print(f"  Avg reward: {results['avg_reward']:.2f}")
+
     else:
-        print("❌ Opción inválida. Ejecuta de nuevo y selecciona 1 o 2.")
+        print("❌ Opción inválida. Ejecuta de nuevo y selecciona 1, 2 o 3.")
     
     print("\n🎉 ¡Entrenamiento completado!")

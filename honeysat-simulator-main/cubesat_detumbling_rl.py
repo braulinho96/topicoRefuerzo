@@ -323,61 +323,62 @@ class CubeSatDetumblingEnv(gym.Env):
             return vector
 
     def _calculate_reward(self, action): 
-        """ 
-        Calcular la recompensa para el paso actual con función de TD optimizada.
-        Incentiva resolver el problema en la menor cantidad de pasos posibles.
-        
-        Args: action (np.ndarray): Comando de torque aplicado. 
-        Returns: float: Valor de recompensa 
-        """ 
-        try: 
-            angular_vel_norm = np.linalg.norm(self.rotation_sim.angular_velocity) 
-        except Exception: 
+        """
+        Recompensa mejorada para desalentar velocidades altas y favorecer soluciones rápidas.
+
+        Diseño:
+        - Penaliza fuertemente velocidades altas (término cuadrático).
+        - Penaliza esfuerzo de control (ligero).
+        - Penaliza cada paso (pequeño) para incentivar menos pasos.
+        - Premia la reducción de velocidad entre pasos (shaping).
+        - Premio de éxito grande, escalado por rapidez (más recompensa si se logra antes).
+        """
+        try:
+            angular_vel_norm = float(np.linalg.norm(self.rotation_sim.angular_velocity))
+        except Exception:
             angular_vel_norm = 1.0
 
-        # Verificar si se logró el objetivo
-        is_success = angular_vel_norm < self.success_threshold
-        
-        # Obtener "effort" de control 
-        control_effort = np.linalg.norm(action)
-        
-        # ============================================
-        # FUNCIÓN DE RECOMPENSA OPTIMIZADA PARA TD
-        # ============================================
-        # Componente 1: Penalización por velocidad angular (normalizada)
-        velocity_penalty = -angular_vel_norm  # Rango: [-inf, 0]
-        
-        # Componente 2: Penalización por esfuerzo de control (bajo peso)
-        control_penalty = -0.02 * control_effort  # Rango: [-inf, 0]
-        
-        # Componente 3: Penalización por paso (incentiva solución rápida)
-        # Esto es crucial para TD: motiva al agente a resolver en menos pasos
-        step_penalty = -0.5  # Penaliza CADA paso para incentivar brevedad
-        
-        # Componente 4: Recompensa de éxito (muy grande para objetivos TD)
-        success_bonus = 0.0
-        if is_success:
-            success_bonus = 100.0  # Bonus grande al lograr el objetivo
-        
-        # Componente 5: Bonus de progreso (si hay reducción en velocidad)
+        control_effort = float(np.linalg.norm(action))
+
+        # Penalización por velocidad: cuadrática para castigar altas velocidades
+        # Escalador ajustable — se puede afinar según la magnitud típica de ω
+        velocity_penalty = -5.0 * (angular_vel_norm ** 2)
+
+        # Penalización por esfuerzo de control (pequeña)
+        control_penalty = -0.01 * control_effort
+
+        # Penalización por paso: pequeño negativo para incentivar rapidez
+        step_penalty = -0.001
+
+        # Bonus por progreso relativo: si la velocidad se reduce respecto al paso anterior
         progress_bonus = 0.0
         if self.prev_angular_vel_norm is not None:
-            reduction = self.prev_angular_vel_norm - angular_vel_norm
-            if reduction > 0:  # Si hay reducción
-                # Bonus proporcional a la magnitud de la reducción
-                progress_bonus = min(reduction * 5.0, 2.0)  # Cap en 2.0
-        
-        # Combinar todos los componentes
-        reward = (velocity_penalty + 
-                  control_penalty + 
-                  step_penalty + 
-                  success_bonus + 
-                  progress_bonus)
-        
-        # Actualizar velocidad anterior para siguiente step
-        self.prev_angular_vel_norm = angular_vel_norm 
-        
-        return reward
+            reduction = (self.prev_angular_vel_norm - angular_vel_norm)
+            if reduction > 0:
+                # Escalar el bonus proporcionalmente, con cap para evitar explosiones
+                progress_bonus = min(reduction * 25.0, 8.0)
+
+        # Bonus de éxito: grande y dependiente de cuán pronto se alcanza
+        success_bonus = 0.0
+        if angular_vel_norm < self.success_threshold:
+            # Recompensa base por éxito
+            base_success = 200.0
+            # Bonus adicional por rapidez: cuantos más pasos queden, mayor el bonus
+            try:
+                remaining_steps = max(0, int(self.max_steps - self.current_step))
+            except Exception:
+                remaining_steps = 0
+            # Escala el bonus con los pasos restantes (ajustable)
+            speed_bonus = remaining_steps * 0.5
+            success_bonus = base_success + speed_bonus
+
+        # Combinar componentes
+        reward = velocity_penalty + control_penalty + step_penalty + progress_bonus + success_bonus
+
+        # Guardar estado para shaping en el siguiente paso
+        self.prev_angular_vel_norm = angular_vel_norm
+
+        return float(reward)
 
     def render(self):
         """
