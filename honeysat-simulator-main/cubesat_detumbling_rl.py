@@ -32,7 +32,7 @@ class CubeSatDetumblingEnv(gym.Env):
 
     metadata = {'render_modes': ['human', 'none']}
 
-    def __init__(self, render_mode=None, max_steps=500, start_time=datetime.now(), time_step=0.1, granularity=100, debug=False, plot_hist=False):
+    def __init__(self, render_mode=None, max_steps=500, start_time=datetime.now(), time_step=0.1, granularity=5, debug=False, plot_hist=False, action_map=None):
         """
         Inicializar el entorno de CubeSat para el problema de detumbling.
 
@@ -63,7 +63,8 @@ class CubeSatDetumblingEnv(gym.Env):
         # Discretize the action space for Q-learning
         # Actions: Positive/Negative torque on each axis (X, Y, Z) + No torque
         self.max_torque = SatellitePersonality.MAX_TORQUE_REACTION_WHEEL
-        self.action_map = {
+
+        self.action_map = action_map if action_map is not None else {
             0: np.array([self.max_torque, 0, 0]),
             1: np.array([-self.max_torque, 0, 0]),
             2: np.array([0, self.max_torque, 0]),

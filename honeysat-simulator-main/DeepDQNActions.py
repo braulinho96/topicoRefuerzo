@@ -5,7 +5,15 @@ from stable_baselines3 import DQN
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.evaluation import evaluate_policy
 from stable_baselines3.common.env_checker import check_env
+from stable_baselines3.common.callbacks import BaseCallback
 from cubesat_detumbling_rl import CubeSatDetumblingEnv
+
+from SatellitePersonality import SatellitePersonality
+from Simulations.RotationSimulation import RotationSimulation
+import numpy as np
+from gymnasium import spaces 
+
+from torch.utils.tensorboard import SummaryWriter
 
 # ============================
 # CONFIGURACIONES INICIALES
@@ -27,13 +35,66 @@ print(f"🔥 Dispositivo usado: {device.upper()}")
 #Para revisar métricas en tiempo real durante el entrenamiento, ejecutar:
 #tensorboard --logdir ./logs_dqn_detumbling
 
+class CustomMetricsCallback(BaseCallback):
+    """
+    Callback personalizado para registrar métricas adicionales en TensorBoard.
+    """
+    def __init__(self, env, min_torque, mid_torque, verbose=0):
+        super().__init__(verbose)
+        self.env = env
+        self.min_torque = min_torque
+        self.mid_torque = mid_torque
+
+    def _on_step(self) -> bool:
+        # Registrar la velocidad angular
+        try:
+            angular_vel_norm = np.linalg.norm(self.env.rotation_sim.angular_velocity)
+            self.logger.record("metrics/angular_velocity_norm", angular_vel_norm)
+        except Exception as e:
+            pass
+        
+        # Registrar min_torque y mid_torque
+        self.logger.record("metrics/min_torque", self.min_torque)
+        self.logger.record("metrics/mid_torque", self.mid_torque)
+        
+        return True
+
+
 def optimize_dqn(trial):
     """
     Función objetivo para la optimización bayesiana con Optuna.
     Entrena un modelo DQN con hiperparámetros propuestos y devuelve
     la recompensa promedio de evaluación.
     """
-    env = Monitor(CubeSatDetumblingEnv(max_steps=1000))
+    # Definir el rango de optimización de torques
+    min_torque = trial.suggest_float("min_torque", 0.01, 0.2) * SatellitePersonality.MAX_TORQUE_REACTION_WHEEL  # 1% a 20% del max
+    mid_torque = trial.suggest_float("mid_torque", 0.3, 0.7) * SatellitePersonality.MAX_TORQUE_REACTION_WHEEL   # 30% a 70% del max
+
+    # Actualizar el mapa de acciones con los valores optimizados
+    action_map = {
+        0: np.array([SatellitePersonality.MAX_TORQUE_REACTION_WHEEL, 0, 0]),
+        1: np.array([-SatellitePersonality.MAX_TORQUE_REACTION_WHEEL, 0, 0]),
+        2: np.array([0, SatellitePersonality.MAX_TORQUE_REACTION_WHEEL, 0]),
+        3: np.array([0, -SatellitePersonality.MAX_TORQUE_REACTION_WHEEL, 0]),
+        4: np.array([0, 0, SatellitePersonality.MAX_TORQUE_REACTION_WHEEL]),
+        5: np.array([0, 0, -SatellitePersonality.MAX_TORQUE_REACTION_WHEEL]),
+        6: np.array([min_torque, 0, 0]),
+        7: np.array([-min_torque, 0, 0]),
+        8: np.array([0, min_torque, 0]),
+        9: np.array([0, -min_torque, 0]),
+        10: np.array([0, 0, min_torque]),
+        11: np.array([0, 0, -min_torque]),
+        12: np.array([mid_torque, 0, 0]),
+        13: np.array([-mid_torque, 0, 0]),
+        14: np.array([0, mid_torque, 0]),
+        15: np.array([0, -mid_torque, 0]),
+        16: np.array([0, 0, mid_torque]),
+        17: np.array([0, 0, -mid_torque]),
+        18: np.array([0, 0, 0]),  # No torque
+    }
+
+    # Crear el entorno con el nuevo mapa de acciones
+    env = Monitor(CubeSatDetumblingEnv(max_steps=1000, action_map=action_map))
 
     # Espacio de búsqueda de hiperparámetros
     params = {
@@ -48,16 +109,23 @@ def optimize_dqn(trial):
         "target_update_interval": trial.suggest_categorical("target_update_interval", [500, 1000, 5000]),
     }
 
+    # Crear modelo DQN con los hiperparámetros optimizados
     model = DQN(
         "MlpPolicy",
         env,
         **params,
-        verbose=0,
+        verbose=1,
         tensorboard_log=LOG_DIR,
         device=device,
     )
 
-    model.learn(total_timesteps=50_000)
+    # Crear el callback personalizado
+    callback = CustomMetricsCallback(env, min_torque, mid_torque)
+
+    # Entrenamiento del modelo
+    model.learn(total_timesteps=50_000, callback=callback)
+
+    # Evaluar el modelo
     mean_reward, _ = evaluate_policy(model, env, n_eval_episodes=5, deterministic=True)
     env.close()
     return mean_reward
@@ -86,17 +154,23 @@ best_params = study.best_params
 env = Monitor(CubeSatDetumblingEnv(max_steps=2000))
 check_env(env)
 
+# Crear el modelo final con los mejores hiperparámetros
 final_model = DQN(
     "MlpPolicy",
     env,
     **best_params,
-    verbose=1,
+    verbose=0,
     tensorboard_log=LOG_DIR,
     device=device,
 )
 
+# Crear el callback personalizado para el entrenamiento final
+final_callback = CustomMetricsCallback(env, 0, 0)
+
 # Entrenamiento principal
-final_model.learn(total_timesteps=50_000)
+final_model.learn(total_timesteps=50_000, callback=final_callback)
+
+# Cerrar SummaryWriter del entrenamiento final
 model_path = os.path.join(MODEL_DIR, "dqn_cubesat_optuna_best.zip")
 final_model.save(model_path)
 
