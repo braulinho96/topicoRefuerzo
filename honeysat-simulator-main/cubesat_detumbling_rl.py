@@ -339,27 +339,18 @@ class CubeSatDetumblingEnv(gym.Env):
             # si no se puede obtener, se retorna 1
             angular_vel_norm = 1.0
 
-            # obtener "effort" de control
-        control_effort = np.linalg.norm(action)
-
-        # funcion de recompensa: penalizar alta velocidad angular y esfuerzo de control
-        # puede ser cambiada, requiere experimentación
-        reward = -angular_vel_norm - 0.01 * control_effort
+        # funcion de recompensa: penalizar alta velocidad angular y paso de tiempo
+        reward = -(angular_vel_norm**2) - 0.01 
 
         # aplicar bonus si es que hubo una reducción significativa en la velocidad angular
         if self.prev_angular_vel_norm is not None:
             reduction = self.prev_angular_vel_norm - angular_vel_norm
-            if reduction > 0.2 * self.prev_angular_vel_norm:  # >20% reducción
-                reward += 3.0
-            elif reduction > 0.1 * self.prev_angular_vel_norm:  # >10% reducción
-                reward += 2.0
-            elif reduction > 0.05 * self.prev_angular_vel_norm:  # >5% reducción
-                reward += 1.0
+            reward += reduction
 
         # acá se aplica bonus si es que se logra una velocidad angular muy baja
         if angular_vel_norm < self.success_threshold:
             print("🎉 SUCCESS: Detumbling achieved!")
-            reward += 10.0
+            reward += 100.0
         
         #Actualizar velocidad anterior
         self.prev_angular_vel_norm = angular_vel_norm

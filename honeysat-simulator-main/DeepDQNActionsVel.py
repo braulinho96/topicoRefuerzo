@@ -92,7 +92,6 @@ class CustomTensorBoardCallback(BaseCallback):
         if self.writer is not None:
             self.writer.close()
 
-
 def optimize_dqn(trial):
     """
     Función objetivo para la optimización bayesiana con Optuna.
@@ -183,8 +182,35 @@ print(f"Recompensa media: {study.best_value:.2f}")
 
 print("\n🏁 Entrenando modelo final con los mejores hiperparámetros...")
 
+
 best_params = study.best_params
-env = Monitor(CubeSatDetumblingEnv(max_steps=2000))
+
+best_min = study.best_params["min_torque"] * SatellitePersonality.MAX_TORQUE_REACTION_WHEEL
+best_mid = study.best_params["mid_torque"] * SatellitePersonality.MAX_TORQUE_REACTION_WHEEL
+
+action_map = {
+        0: np.array([SatellitePersonality.MAX_TORQUE_REACTION_WHEEL, 0, 0]),
+        1: np.array([-SatellitePersonality.MAX_TORQUE_REACTION_WHEEL, 0, 0]),
+        2: np.array([0, SatellitePersonality.MAX_TORQUE_REACTION_WHEEL, 0]),
+        3: np.array([0, -SatellitePersonality.MAX_TORQUE_REACTION_WHEEL, 0]),
+        4: np.array([0, 0, SatellitePersonality.MAX_TORQUE_REACTION_WHEEL]),
+        5: np.array([0, 0, -SatellitePersonality.MAX_TORQUE_REACTION_WHEEL]),
+        6: np.array([best_min, 0, 0]),
+        7: np.array([-best_min, 0, 0]),
+        8: np.array([0, best_min, 0]),
+        9: np.array([0, -best_min, 0]),
+        10: np.array([0, 0, best_min]),
+        11: np.array([0, 0, -best_min]),
+        12: np.array([best_mid, 0, 0]),
+        13: np.array([-best_mid, 0, 0]),
+        14: np.array([0, best_mid, 0]),
+        15: np.array([0, -best_mid, 0]),
+        16: np.array([0, 0, best_mid]),
+        17: np.array([0, 0, -best_mid]),
+        18: np.array([0, 0, 0]),
+    }
+
+env = Monitor(CubeSatDetumblingEnv(max_steps=2000, action_map=action_map))
 check_env(env)
 
 # Crear el modelo final con los mejores hiperparámetros
