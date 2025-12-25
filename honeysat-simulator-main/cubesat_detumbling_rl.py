@@ -269,7 +269,7 @@ class CubeSatDetumblingEnv(gym.Env):
         # revisar si es que termino el episodio
         try:
             angular_vel_norm = np.linalg.norm(self.rotation_sim.angular_velocity)
-            terminated = angular_vel_norm < self.success_threshold
+            terminated = bool(angular_vel_norm < self.success_threshold)
         except Exception:
             angular_vel_norm = 1.0
             terminated = False
@@ -340,16 +340,10 @@ class CubeSatDetumblingEnv(gym.Env):
             angular_vel_norm = 1.0
 
         # funcion de recompensa: penalizar alta velocidad angular y paso de tiempo
-        reward = -(angular_vel_norm**2) - 0.01 
-
-        # aplicar bonus si es que hubo una reducción significativa en la velocidad angular
-        if self.prev_angular_vel_norm is not None:
-            reduction = self.prev_angular_vel_norm - angular_vel_norm
-            reward += reduction
+        reward = - angular_vel_norm - 0.01*abs(np.linalg.norm(action))
 
         # acá se aplica bonus si es que se logra una velocidad angular muy baja
         if angular_vel_norm < self.success_threshold:
-            print("🎉 SUCCESS: Detumbling achieved!")
             reward += 100.0
         
         #Actualizar velocidad anterior
