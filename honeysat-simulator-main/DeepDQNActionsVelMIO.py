@@ -7,6 +7,7 @@ from stable_baselines3.common.evaluation import evaluate_policy
 from stable_baselines3.common.env_checker import check_env
 from stable_baselines3.common.callbacks import BaseCallback
 from cubesat_detumbling_rl import CubeSatDetumblingEnv
+import json
 
 from SatellitePersonality import SatellitePersonality
 from Simulations.RotationSimulation import RotationSimulation
@@ -75,8 +76,8 @@ def optimize_dqn(trial):
     la recompensa promedio de evaluación.
     """
     # Definir el rango de optimización de torques
-    min_torque = trial.suggest_float("min_torque", 0.01, 0.2) * SatellitePersonality.MAX_TORQUE_REACTION_WHEEL  # 1% a 20% del max
-    mid_torque = trial.suggest_float("mid_torque", 0.3, 0.7) * SatellitePersonality.MAX_TORQUE_REACTION_WHEEL   # 30% a 70% del max
+    min_torque = trial.suggest_float("min_torque", 0.001, 0.02) * SatellitePersonality.MAX_TORQUE_REACTION_WHEEL  # 0.1% a 2% del max
+    mid_torque = trial.suggest_float("mid_torque", 0.05, 0.2) * SatellitePersonality.MAX_TORQUE_REACTION_WHEEL   # 5% a 20% del max
 
     # Actualizar el mapa de acciones con los valores optimizados
     action_map = {
@@ -98,7 +99,7 @@ def optimize_dqn(trial):
         15: np.array([0, -mid_torque, 0]),
         16: np.array([0, 0, mid_torque]),
         17: np.array([0, 0, -mid_torque]),
-        18: np.array([0, 0, 0]),  # No torque
+        18: np.array([0, 0, 0]),  
     }
 
     # Crear el entorno con el nuevo mapa de acciones
@@ -108,9 +109,9 @@ def optimize_dqn(trial):
     params = {
         "learning_rate": trial.suggest_float("learning_rate", 1e-5, 1e-3),
         "buffer_size": trial.suggest_categorical("buffer_size", [50_000, 100_000]),
-        "batch_size": trial.suggest_categorical("batch_size", [128, 256]),
+        "batch_size": trial.suggest_categorical("batch_size", [256, 512]),
         "gamma": trial.suggest_float("gamma", 0.95, 0.999),
-        "train_freq": trial.suggest_categorical("train_freq", [4, 8, 16]),
+        "train_freq": trial.suggest_categorical("train_freq", [1, 4, 8]),
         "gradient_steps": trial.suggest_categorical("gradient_steps", [1, 2, 4]),
         "exploration_fraction": trial.suggest_float("exploration_fraction", 0.05, 0.3),
         "exploration_final_eps": trial.suggest_float("exploration_final_eps", 0.01, 0.1),
@@ -129,9 +130,6 @@ def optimize_dqn(trial):
     # Imprimimos los hiperparámetros y torques usados en este trial
     print(f"\n🔧 Trial {trial.number} - Hiperparámetros: {params}, min_torque: {min_torque:.4f}, mid_torque: {mid_torque:.4f}")
     
-    #callback = CustomTensorBoardCallback()
-    #model.learn(total_timesteps=2_000, callback=callback)
-
     # Entrenamiento del modelo
     model.learn(total_timesteps=50_000)
 
@@ -148,6 +146,18 @@ study_name = "dqn_cubesat_optuna_MIO"
 print("\n🚀 Iniciando optimización con Optuna...")
 study = optuna.create_study(direction="maximize", study_name=study_name)
 study.optimize(optimize_dqn, n_trials=50)
+
+# Almacenamos los parametros del estudio en un archivo JSON para usarlos en la evaluación y entrenamiento final
+metadata = {
+    "best_params": study.best_params,
+    "action_map_info": {
+        "min_torque_factor": study.best_params["min_torque"],
+        "mid_torque_factor": study.best_params["mid_torque"],
+        "max_torque_constant": SatellitePersonality.MAX_TORQUE_REACTION_WHEEL
+    }
+}
+with open(os.path.join(MODEL_DIR, "best_config.json"), "w") as f:
+    json.dump(metadata, f, indent=4)
 
 print("\n✅ Mejor configuración encontrada:")
 print(study.best_params)
@@ -204,7 +214,7 @@ final_model = DQN(
 final_callback = CustomTensorBoardCallback()
 
 # Entrenamiento principal
-final_model.learn(total_timesteps=300_000, callback=final_callback, log_interval=1)
+final_model.learn(total_timesteps=400_000, callback=final_callback, log_interval=1)
 
 # Cerrar SummaryWriter del entrenamiento final
 model_path = os.path.join(MODEL_DIR, "dqn_cubesat_optuna_best_.zip")
