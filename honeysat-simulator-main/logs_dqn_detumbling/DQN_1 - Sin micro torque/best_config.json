@@ -1,0 +1,20 @@
+{
+    "best_params": {
+        "min_torque": 0.10875087434923619,
+        "mid_torque": 0.5976690789038512,
+        "learning_rate": 0.0004089800440160502,
+        "buffer_size": 100000,
+        "batch_size": 256,
+        "gamma": 0.9678771050196215,
+        "train_freq": 4,
+        "gradient_steps": 4,
+        "exploration_fraction": 0.2832897724756604,
+        "exploration_final_eps": 0.07216401987072266,
+        "target_update_interval": 1000
+    },
+    "action_map_info": {
+        "min_torque_factor": 0.10875087434923619,
+        "mid_torque_factor": 0.5976690789038512,
+        "max_torque_constant": 0.0032
+    }
+}
