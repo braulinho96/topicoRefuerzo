@@ -3,7 +3,7 @@ import json
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-from stable_baselines3 import DQN
+from stable_baselines3 import DQN, PPO
 from stable_baselines3.common.monitor import Monitor
 
 from cubesat_detumbling_rl import CubeSatDetumblingEnv
@@ -12,10 +12,16 @@ from SatellitePersonality import SatellitePersonality
 # ============================
 # CONFIGURACIÓN DE RUTAS
 # ============================
-MODEL_DIR = "./models_dqn_detumbling"
-MODEL_PATH = os.path.join(MODEL_DIR, "dqn_cubesat_optuna_best_.zip")
-CONFIG_PATH = os.path.join(MODEL_DIR, "best_config.json")
-
+print(f" 1 Pa DQN 2 PPO")
+Choice = input("Enter your name: ")
+if Choice == "1":
+    MODEL_DIR = "./models_dqn_detumbling"
+    MODEL_PATH = os.path.join(MODEL_DIR, "dqn_cubesat_optuna_best_.zip")
+    CONFIG_PATH = os.path.join(MODEL_DIR, "best_config.json")
+else:
+    MODEL_DIR = "./models_ppo_detumbling"
+    MODEL_PATH = os.path.join(MODEL_DIR, "ppo_cubesat_optuna_best_.zip")
+    CONFIG_PATH = os.path.join(MODEL_DIR, "best_config.json")
 def load_best_action_map(config_path):
     """Lee el JSON y reconstruye el action_map usado en el entrenamiento."""
     with open(config_path, "r") as f:
@@ -165,14 +171,17 @@ if __name__ == "__main__":
         
         # 3. Cargar Modelo
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        model = DQN.load(MODEL_PATH, env=env, device=device)
+        if Choice == "1":
+            model = DQN.load(MODEL_PATH, env=env, device=device)
+        else:
+            model = PPO.load(MODEL_PATH, env=env, device="cpu")
         print("🚀 Modelo y configuración cargados correctamente.")
 
         # 4. Evaluar
-        #evaluate_and_plot(model, env)
+        evaluate_and_plot(model, env)
 
         # 4. Debug paso a paso
-        debug_and_plot_episode(model, env)
+        #debug_and_plot_episode(model, env)
 
         env.close()
     else:
