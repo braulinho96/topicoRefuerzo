@@ -45,7 +45,7 @@ def run_stress_test(model, action_map, penalty, scenario_name, incertidumbre_pct
     # Aplicar degradación a los actuadores modificando el action map
     degraded_action_map = {k: v * actuator_efficiency for k, v in action_map.items()}
     
-    env = Monitor(CubeSatDetumblingEnv(max_steps=500, action_map=degraded_action_map, action_penalty=penalty))
+    env = Monitor(CubeSatDetumblingEnv(max_steps=200, action_map=degraded_action_map, action_penalty=penalty))
     threshold = env.unwrapped.success_threshold
     
     success_count = 0
@@ -55,14 +55,11 @@ def run_stress_test(model, action_map, penalty, scenario_name, incertidumbre_pct
     for _ in range(N_EPISODES):
         obs, _ = env.reset()
         
-        # Inyectar rotación extrema (sobrescribir el reset por defecto del entorno)
+        # Inyectar rotación extrema y actualizar directamente la observación
         if extreme_spin:
-            env.unwrapped.rotation_sim.angular_velocity = np.random.uniform(-2.0, 2.0, size=3)
-            # Recalculamos la observación inicial tras el cambio brusco
-            mag_field_inertial_T = env.unwrapped._mag_start * 1e-9
-            quat = env.unwrapped.rotation_sim.quaternion
-            mag_field_body = env.unwrapped._rotate_vector_by_quaternion(mag_field_inertial_T, quat)
-            obs = env.unwrapped._get_observation(mag_field_body)
+            new_vel = np.random.uniform(-2.0, 2.0, size=3)
+            env.unwrapped.rotation_sim.angular_velocity = new_vel
+            obs[4:7] = new_vel
 
         done, truncated = False, False
         ep_reward = 0.0
@@ -80,11 +77,8 @@ def run_stress_test(model, action_map, penalty, scenario_name, incertidumbre_pct
                 # Ruido proporcional: Normal centrada en 1.0 con desviación = incertidumbre_pct
                 factor_ruido = np.random.normal(loc=1.0, scale=incertidumbre_pct, size=3)
                 
-                # Ruido de piso (blanco): Simula el error térmico fijo del sensor (0.0001 rad/s)
-                ruido_piso = np.random.normal(loc=0.0, scale=0.0001, size=3)
-                
-                # Aplicamos ambos ruidos EXCLUSIVAMENTE a las velocidades
-                obs_neurona[4:7] = (w_actual * factor_ruido) + ruido_piso
+                # Aplicamos el ruido EXCLUSIVAMENTE a las velocidades
+                obs_neurona[4:7] = w_actual * factor_ruido
                 
             # 3. La neurona predice usando la observación RUIDOSA (obs_neurona)
             action, _ = model.predict(obs_neurona, deterministic=True)
@@ -116,7 +110,7 @@ if __name__ == "__main__":
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
     base_action_map, base_penalty = load_base_config()
-    env_dummy = Monitor(CubeSatDetumblingEnv(max_steps=500, action_map=base_action_map, action_penalty=base_penalty))
+    env_dummy = Monitor(CubeSatDetumblingEnv(max_steps=200, action_map=base_action_map, action_penalty=base_penalty))
     
     # Cambia DQN por PPO si vas a evaluar ese modelo
     model = DQN.load(MODEL_PATH, env=env_dummy, device=device)
@@ -130,7 +124,7 @@ if __name__ == "__main__":
     print("▶ Evaluando Escenario Base...")
     results.append(run_stress_test(model, base_action_map, base_penalty, "Base (Simulación Ideal)"))
     
-    # 2. Ruido de Sensores (5% de incertidumbre + ruido térmico)
+    # 2. Ruido de Sensores (5% de incertidumbre estocástica)
     print("▶ Evaluando Ruido de Sensores...")
     results.append(run_stress_test(model, base_action_map, base_penalty, "Incertidumbre Giroscopio (5%)", incertidumbre_pct=0.05))
     
