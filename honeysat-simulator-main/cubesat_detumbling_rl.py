@@ -32,7 +32,7 @@ class CubeSatDetumblingEnv(gym.Env):
 
     metadata = {'render_modes': ['human', 'none']}
 
-    def __init__(self, render_mode=None, max_steps=500, start_time=datetime.now(), time_step=0.1, granularity=5, debug=False, plot_hist=False, action_map=None):
+    def __init__(self, render_mode=None, max_steps=500, start_time=datetime.now(), time_step=0.1, granularity=5, debug=False, plot_hist=False, action_map=None, action_penalty=0.01):
         """
         Inicializar el entorno de CubeSat para el problema de detumbling.
 
@@ -43,6 +43,7 @@ class CubeSatDetumblingEnv(gym.Env):
             time_step (float): Paso de tiempo de simulación en segundos
             granularity (int): Granularida de la simulacion, divide a time_step
             debug (bool): Activar historico de observaciones y graficar
+            action_penalty (float): Penalización por tomar acciones
         """
         super().__init__()
 
@@ -51,6 +52,7 @@ class CubeSatDetumblingEnv(gym.Env):
         self.time_step = time_step
         self.start_time = start_time
         self.current_time = self.start_time
+        self.action_penalty = action_penalty
 
         self.sim_granularity = granularity
         self._plot_hist = plot_hist
@@ -340,15 +342,12 @@ class CubeSatDetumblingEnv(gym.Env):
             angular_vel_norm = 1.0
 
         # funcion de recompensa: penalizar alta velocidad angular y paso de tiempo
-        reward = - angular_vel_norm - 0.01*abs(np.linalg.norm(action))
+        reward = - angular_vel_norm - self.action_penalty*abs(np.linalg.norm(action))
 
         # acá se aplica bonus si es que se logra una velocidad angular muy baja
         if angular_vel_norm < self.success_threshold:
             reward += 100.0
         
-        #Actualizar velocidad anterior
-        self.prev_angular_vel_norm = angular_vel_norm
-
         return reward
 
     def render(self):

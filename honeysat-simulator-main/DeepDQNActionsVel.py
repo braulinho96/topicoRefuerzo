@@ -7,13 +7,18 @@ from stable_baselines3.common.evaluation import evaluate_policy
 from stable_baselines3.common.env_checker import check_env
 from stable_baselines3.common.callbacks import BaseCallback
 from cubesat_detumbling_rl import CubeSatDetumblingEnv
+import json
 
 from SatellitePersonality import SatellitePersonality
 from Simulations.RotationSimulation import RotationSimulation
 import numpy as np
 from gymnasium import spaces 
 
-from torch.utils.tensorboard import SummaryWriter
+#from torch.utils.tensorboard import SummaryWriter
+
+print(f"¿CUDA disponible?: {torch.cuda.is_available()}")
+if torch.cuda.is_available():
+    print(f"GPU detectada: {torch.cuda.get_device_name(0)}")
 
 # ============================
 # CONFIGURACIONES INICIALES
@@ -37,60 +42,32 @@ print(f"🔥 Dispositivo usado: {device.upper()}")
 
 class CustomTensorBoardCallback(BaseCallback):
     """
-    Callback que registra métricas personalizadas en TensorBoard junto con las métricas SB3.
+    Callback que registra métricas personalizadas en el MISMO TensorBoard
+    que usa Stable-Baselines3 (train/loss, exploration_rate, etc.).
     """
-    def __init__(self, min_torque, mid_torque, verbose=0):
+    def __init__(self, verbose=0):
         super().__init__(verbose)
-        self.min_torque = min_torque
-        self.mid_torque = mid_torque
-        self.step_count = 0
-        self.writer = None
-
-    def _on_training_start(self):
-        """Inicializar SummaryWriter al comenzar el entrenamiento"""
-        # Crear SummaryWriter en el mismo directorio que SB3
-        if hasattr(self.model, 'logger') and hasattr(self.model.logger, 'dir'):
-            log_dir = self.model.logger.dir
-            self.writer = SummaryWriter(log_dir=log_dir)
-            print(f"Custom metrics writer initialized in: {log_dir}")
 
     def _on_step(self) -> bool:
-        self.step_count += 1
-
-        # Registrar métricas personalizadas
         try:
-            # Acceder al entorno original (SB3 usa DummyVecEnv, así que necesitamos envs[0])
-            if hasattr(self, 'training_env') and self.training_env is not None:
-                # SB3 envuelve el entorno en DummyVecEnv, necesitamos acceder al original
-                original_env = self.training_env.envs[0].unwrapped
-                angular_velocity = original_env.rotation_sim.angular_velocity
-                angular_vel_norm = np.linalg.norm(angular_velocity)
+            # Acceder al entorno real (DummyVecEnv -> envs[0] -> unwrapped)
+            original_env = self.training_env.envs[0].unwrapped
+            angular_velocity = original_env.rotation_sim.angular_velocity
 
-                # Log usando SummaryWriter
-                if self.writer is not None:
-                    # Angular velocity metrics
-                    self.writer.add_scalar("angular_velocity_norm", angular_vel_norm, self.step_count)
-                    self.writer.add_scalar("angular_velocity_x", angular_velocity[0], self.step_count)
-                    self.writer.add_scalar("angular_velocity_y", angular_velocity[1], self.step_count)
-                    self.writer.add_scalar("angular_velocity_z", angular_velocity[2], self.step_count)
+            # Métricas físicas
+            angular_vel_norm = float(np.linalg.norm(angular_velocity))
 
-                    # Torque metrics
-                    self.writer.add_scalar("min_torque", self.min_torque, self.step_count)
-                    self.writer.add_scalar("mid_torque", self.mid_torque, self.step_count)
+            # ===== Métricas personalizadas =====
+            self.logger.record("custom/angular_velocity_norm", angular_vel_norm)
+            self.logger.record("custom/angular_velocity_x", float(angular_velocity[0]))
+            self.logger.record("custom/angular_velocity_y", float(angular_velocity[1]))
+            self.logger.record("custom/angular_velocity_z", float(angular_velocity[2]))
 
-                # Debug print every 1000 steps
-                if self.step_count % 1000 == 0:
-                    print(f"Step {self.step_count}: Angular velocity norm = {angular_vel_norm:.4f}")
-
-        except Exception as e:
-            print(f"Error in callback: {e}")
+        except Exception:
+            # Evitar que el callback rompa el entrenamiento
+            pass
 
         return True
-
-    def _on_training_end(self):
-        """Cerrar SummaryWriter al finalizar"""
-        if self.writer is not None:
-            self.writer.close()
 
 def optimize_dqn(trial):
     """
@@ -99,8 +76,8 @@ def optimize_dqn(trial):
     la recompensa promedio de evaluación.
     """
     # Definir el rango de optimización de torques
-    min_torque = trial.suggest_float("min_torque", 0.01, 0.2) * SatellitePersonality.MAX_TORQUE_REACTION_WHEEL  # 1% a 20% del max
-    mid_torque = trial.suggest_float("mid_torque", 0.3, 0.7) * SatellitePersonality.MAX_TORQUE_REACTION_WHEEL   # 30% a 70% del max
+    min_torque = trial.suggest_float("min_torque", 0.001, 0.02) * SatellitePersonality.MAX_TORQUE_REACTION_WHEEL  # 0.1% a 2% del max
+    mid_torque = trial.suggest_float("mid_torque", 0.05, 0.2) * SatellitePersonality.MAX_TORQUE_REACTION_WHEEL   # 5% a 20% del max
 
     # Actualizar el mapa de acciones con los valores optimizados
     action_map = {
@@ -122,55 +99,65 @@ def optimize_dqn(trial):
         15: np.array([0, -mid_torque, 0]),
         16: np.array([0, 0, mid_torque]),
         17: np.array([0, 0, -mid_torque]),
-        18: np.array([0, 0, 0]),  # No torque
+        18: np.array([0, 0, 0]),  
     }
 
     # Crear el entorno con el nuevo mapa de acciones
-    env = Monitor(CubeSatDetumblingEnv(max_steps=1000, action_map=action_map))
+    env = Monitor(CubeSatDetumblingEnv(max_steps=200, action_map=action_map))
 
     # Espacio de búsqueda de hiperparámetros
     params = {
-        "learning_rate": trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True),
-        "buffer_size": trial.suggest_categorical("buffer_size", [50_000, 100_000, 200_000]),
-        "batch_size": trial.suggest_categorical("batch_size", [64, 128, 256]),
-        "gamma": trial.suggest_float("gamma", 0.9, 0.999),
+        "learning_rate": trial.suggest_float("learning_rate", 1e-5, 1e-3),
+        "buffer_size": trial.suggest_categorical("buffer_size", [50_000, 100_000]),
+        "batch_size": trial.suggest_categorical("batch_size", [256, 512]),
+        "gamma": trial.suggest_float("gamma", 0.95, 0.999),
         "train_freq": trial.suggest_categorical("train_freq", [1, 4, 8]),
         "gradient_steps": trial.suggest_categorical("gradient_steps", [1, 2, 4]),
         "exploration_fraction": trial.suggest_float("exploration_fraction", 0.05, 0.3),
         "exploration_final_eps": trial.suggest_float("exploration_final_eps", 0.01, 0.1),
-        "target_update_interval": trial.suggest_categorical("target_update_interval", [500, 1000, 5000]),
+        "target_update_interval": trial.suggest_categorical("target_update_interval", [1000, 5000]),
     }
-
+    
     # Crear modelo DQN con los hiperparámetros optimizados
     model = DQN(
         "MlpPolicy",
         env,
         **params,
-        verbose=0,  # Changed from 1 to 0 to reduce console output
-        tensorboard_log=LOG_DIR,
+        verbose=0,
         device=device,
     )
 
-    # Crear el callback personalizado
-    callback = CustomTensorBoardCallback(min_torque, mid_torque)
-
+    # Imprimimos los hiperparámetros y torques usados en este trial
+    print(f"\n🔧 Trial {trial.number} - Hiperparámetros: {params}, min_torque: {min_torque:.4f}, mid_torque: {mid_torque:.4f}")
+    
     # Entrenamiento del modelo
-    model.learn(total_timesteps=50_000, callback=callback)
+    model.learn(total_timesteps=50_000)
 
     # Evaluar el modelo
-    mean_reward, _ = evaluate_policy(model, env, n_eval_episodes=5, deterministic=True)
+    mean_reward, _ = evaluate_policy(model, env, n_eval_episodes=10, deterministic=True)
     env.close()
     return mean_reward
-
 
 # ============================
 # OPTIMIZACIÓN BAYESIANA
 # ============================
 
-study_name = "dqn_cubesat_optuna"
+study_name = "dqn_cubesat_optuna_MIO"
 print("\n🚀 Iniciando optimización con Optuna...")
 study = optuna.create_study(direction="maximize", study_name=study_name)
-study.optimize(optimize_dqn, n_trials=15)
+study.optimize(optimize_dqn, n_trials=50)
+
+# Almacenamos los parametros del estudio en un archivo JSON para usarlos en la evaluación y entrenamiento final
+metadata = {
+    "best_params": study.best_params,
+    "action_map_info": {
+        "min_torque_factor": study.best_params["min_torque"],
+        "mid_torque_factor": study.best_params["mid_torque"],
+        "max_torque_constant": SatellitePersonality.MAX_TORQUE_REACTION_WHEEL
+    }
+}
+with open(os.path.join(MODEL_DIR, "best_config.json"), "w") as f:
+    json.dump(metadata, f, indent=4)
 
 print("\n✅ Mejor configuración encontrada:")
 print(study.best_params)
@@ -182,12 +169,11 @@ print(f"Recompensa media: {study.best_value:.2f}")
 
 print("\n🏁 Entrenando modelo final con los mejores hiperparámetros...")
 
-
-best_params = study.best_params
-
+best_params = study.best_params.copy()
 best_min = study.best_params["min_torque"] * SatellitePersonality.MAX_TORQUE_REACTION_WHEEL
 best_mid = study.best_params["mid_torque"] * SatellitePersonality.MAX_TORQUE_REACTION_WHEEL
-
+best_params.pop("min_torque")
+best_params.pop("mid_torque")
 action_map = {
         0: np.array([SatellitePersonality.MAX_TORQUE_REACTION_WHEEL, 0, 0]),
         1: np.array([-SatellitePersonality.MAX_TORQUE_REACTION_WHEEL, 0, 0]),
@@ -210,7 +196,8 @@ action_map = {
         18: np.array([0, 0, 0]),
     }
 
-env = Monitor(CubeSatDetumblingEnv(max_steps=2000, action_map=action_map))
+
+env = Monitor(CubeSatDetumblingEnv(max_steps=200, action_map=action_map))
 check_env(env)
 
 # Crear el modelo final con los mejores hiperparámetros
@@ -224,13 +211,13 @@ final_model = DQN(
 )
 
 # Crear el callback personalizado para el entrenamiento final
-final_callback = CustomTensorBoardCallback(0, 0)
+final_callback = CustomTensorBoardCallback()
 
 # Entrenamiento principal
-final_model.learn(total_timesteps=50_000, callback=final_callback)
+final_model.learn(total_timesteps=400_000, callback=final_callback, log_interval=1)
 
 # Cerrar SummaryWriter del entrenamiento final
-model_path = os.path.join(MODEL_DIR, "dqn_cubesat_optuna_best.zip")
+model_path = os.path.join(MODEL_DIR, "dqn_cubesat_optuna_best_.zip")
 final_model.save(model_path)
 
 print(f"\n💾 Modelo final guardado en: {model_path}")
@@ -239,7 +226,7 @@ print(f"\n💾 Modelo final guardado en: {model_path}")
 # EVALUACIÓN FINAL
 # ============================
 
-mean_reward, std_reward = evaluate_policy(final_model, env, n_eval_episodes=10, deterministic=True)
+mean_reward, std_reward = evaluate_policy(final_model, env, n_eval_episodes=50, deterministic=True)
 print(f"\n🎯 Recompensa promedio final: {mean_reward:.2f} ± {std_reward:.2f}")
 
 env.close()

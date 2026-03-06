@@ -1,0 +1,27 @@
+{
+    "best_params": {
+        "min_torque": 0.008141475324128577,
+        "mid_torque": 0.1695839277713383,
+        "action_penalty": 0.049694262926073,
+        "learning_rate": 0.003056149711223524,
+        "buffer_size": 250000,
+        "batch_size_power": 10,
+        "gamma": 0.9668055327369186,
+        "train_freq": 5,
+        "gradient_steps": 4,
+        "exploration_fraction": 0.1390371749118834,
+        "exploration_final_eps": 0.06835374047151371,
+        "target_update_interval": 609,
+        "max_grad_norm": 2.889556681039011,
+        "tau": 0.5920868610714546,
+        "net_arch": [
+            64,
+            64
+        ]
+    },
+    "action_map_info": {
+        "min_torque_factor": 0.008141475324128577,
+        "mid_torque_factor": 0.1695839277713383,
+        "max_torque_constant": 0.0032
+    }
+}
